@@ -1,0 +1,3770 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ZombAI — TouchLess</title>
+
+  <!-- Google Fonts: Orbitron (display) + Share Tech Mono (mono) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+
+  <!-- ── Step 1B-i: Three.js r128 (pinned CDN) ── -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+  <!-- ── Step 1C-i: MediaPipe Hands (UMD build — exposes global Hands) ── -->
+  <!-- Note: hands.js NOT hands.min.js — the .min build does NOT expose globals -->
+  <!-- camera_utils dropped — using native getUserMedia + rAF loop instead     -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"
+          crossorigin="anonymous"></script>
+
+  <style>
+    /* ═══════════════════════════════════════════════
+       CSS VARIABLES — ZombAI Theme
+    ═══════════════════════════════════════════════ */
+    :root {
+      --cyan:        #00f5ff;
+      --magenta:     #ff00c8;
+      --cyan-dim:    rgba(0, 245, 255, 0.15);
+      --magenta-dim: rgba(255, 0, 200, 0.15);
+      --cyan-glow:   0 0 12px #00f5ff, 0 0 30px rgba(0,245,255,0.4);
+      --mag-glow:    0 0 12px #ff00c8, 0 0 30px rgba(255,0,200,0.4);
+      --bg:          #000000;
+      --surface:     rgba(0, 0, 0, 0.75);
+      --border:      rgba(0, 245, 255, 0.2);
+      --text-primary:   #e8f8ff;
+      --text-secondary: rgba(232, 248, 255, 0.5);
+      --font-display: 'Orbitron', monospace;
+      --font-mono:    'Share Tech Mono', monospace;
+      --ui-radius:    3px;
+      --transition:   0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+    }
+
+    /* ═══════════════════════════════════════════════
+       RESET & BASE
+    ═══════════════════════════════════════════════ */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      font-family: var(--font-mono);
+      color: var(--text-primary);
+      cursor: none; /* custom cursor via JS */
+      user-select: none;
+    }
+
+    /* ═══════════════════════════════════════════════
+       CUSTOM CURSOR
+    ═══════════════════════════════════════════════ */
+    #cursor {
+      position: fixed;
+      width: 12px;
+      height: 12px;
+      border: 1.5px solid var(--cyan);
+      border-radius: 50%;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      transition: transform 0.08s ease, width 0.2s ease, height 0.2s ease, border-color 0.2s ease;
+      z-index: 9999;
+      box-shadow: var(--cyan-glow);
+    }
+    #cursor.active {
+      width: 20px;
+      height: 20px;
+      border-color: var(--magenta);
+      box-shadow: var(--mag-glow);
+    }
+
+    /* ═══════════════════════════════════════════════
+       CANVAS LAYER STACK
+    ═══════════════════════════════════════════════ */
+    #app {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Three.js WebGL canvas — bottom layer */
+    #webgl-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100% !important;
+      height: 100% !important;
+      display: block;
+      z-index: 1;
+    }
+
+    /* 2D skeleton overlay canvas — above WebGL */
+    #skeleton-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    /* Hidden camera feed for MediaPipe */
+    #camera-feed {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ═══════════════════════════════════════════════
+       SCANLINE OVERLAY (aesthetic texture)
+    ═══════════════════════════════════════════════ */
+    #scanlines {
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        to bottom,
+        transparent 0px,
+        transparent 3px,
+        rgba(0, 0, 0, 0.06) 3px,
+        rgba(0, 0, 0, 0.06) 4px
+      );
+    }
+
+    /* ═══════════════════════════════════════════════
+       HEADER
+    ═══════════════════════════════════════════════ */
+    #header {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 28px;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.7) 0%, transparent 100%);
+    }
+
+    #logo {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+
+    #logo-text {
+      font-family: var(--font-display);
+      font-size: 22px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      color: var(--cyan);
+      text-shadow: var(--cyan-glow);
+    }
+
+    #logo-sub {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.25em;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+    }
+
+    #header-right {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      gap: 4px;
+    }
+
+    #preset-label {
+      font-family: var(--font-display);
+      font-size: 10px;
+      letter-spacing: 0.3em;
+      color: var(--magenta);
+      text-shadow: var(--mag-glow);
+      text-transform: uppercase;
+      opacity: 0;
+      transition: opacity 0.5s ease;
+    }
+    #preset-label.visible { opacity: 1; }
+
+    #voice-indicator {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 9px;
+      letter-spacing: 0.2em;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+    }
+
+    #voice-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--text-secondary);
+      transition: background 0.3s ease;
+    }
+    #voice-dot.listening {
+      background: var(--cyan);
+      box-shadow: var(--cyan-glow);
+      animation: pulse-dot 1.4s infinite;
+    }
+
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.4; transform: scale(0.7); }
+    }
+
+    /* ═══════════════════════════════════════════════
+       HUD OVERLAY (Gesture + Status)
+    ═══════════════════════════════════════════════ */
+    #hud {
+      position: absolute;
+      bottom: 90px;
+      left: 28px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      pointer-events: none;
+    }
+
+    #gesture-label {
+      font-family: var(--font-display);
+      font-size: 11px;
+      letter-spacing: 0.3em;
+      color: var(--cyan);
+      text-shadow: var(--cyan-glow);
+      text-transform: uppercase;
+      opacity: 0;
+      transition: opacity 0.3s ease;
+      min-width: 160px;
+    }
+    #gesture-label.visible { opacity: 1; }
+
+    #status-line {
+      font-size: 10px;
+      letter-spacing: 0.18em;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+    }
+
+    #hand-count {
+      font-size: 10px;
+      letter-spacing: 0.2em;
+      color: var(--text-secondary);
+    }
+
+    /* Hand indicators */
+    .hand-badge {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      margin-right: 5px;
+      vertical-align: middle;
+      opacity: 0.25;
+      transition: opacity 0.2s ease, box-shadow 0.2s ease;
+    }
+    .hand-badge.active { opacity: 1; }
+    .hand-badge.left  { background: var(--cyan);    }
+    .hand-badge.left.active  { box-shadow: var(--cyan-glow); }
+    .hand-badge.right { background: var(--magenta); }
+    .hand-badge.right.active { box-shadow: var(--mag-glow); }
+
+    /* ═══════════════════════════════════════════════
+       RIP PROGRESS BAR
+    ═══════════════════════════════════════════════ */
+    #rip-bar-wrap {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.4s ease;
+    }
+    #rip-bar-wrap.visible { opacity: 1; }
+
+    #rip-label {
+      font-family: var(--font-display);
+      font-size: 10px;
+      letter-spacing: 0.35em;
+      color: var(--magenta);
+      text-transform: uppercase;
+      text-shadow: var(--mag-glow);
+    }
+
+    #rip-bar {
+      width: 220px;
+      height: 3px;
+      background: rgba(255, 0, 200, 0.15);
+      border: 1px solid rgba(255, 0, 200, 0.3);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    #rip-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--magenta);
+      box-shadow: 0 0 10px var(--magenta);
+      border-radius: 2px;
+      transition: width 0.1s linear;
+    }
+
+    /* ═══════════════════════════════════════════════
+       REFORM PROGRESS BAR
+    ═══════════════════════════════════════════════ */
+    #reform-bar-wrap {
+      position: absolute;
+      top: calc(50% + 30px);
+      left: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.4s ease;
+    }
+    #reform-bar-wrap.visible { opacity: 1; }
+
+    #reform-label {
+      font-family: var(--font-display);
+      font-size: 10px;
+      letter-spacing: 0.35em;
+      color: var(--cyan);
+      text-transform: uppercase;
+      text-shadow: var(--cyan-glow);
+    }
+
+    #reform-bar {
+      width: 220px;
+      height: 3px;
+      background: rgba(0, 245, 255, 0.1);
+      border: 1px solid rgba(0, 245, 255, 0.25);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    #reform-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--cyan);
+      box-shadow: 0 0 10px var(--cyan);
+      border-radius: 2px;
+      transition: width 0.1s linear;
+    }
+
+    /* ═══════════════════════════════════════════════
+       FOOTER — SHAPE BUTTONS
+    ═══════════════════════════════════════════════ */
+    #footer {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      padding: 16px 24px 22px;
+      background: linear-gradient(to top, rgba(0,0,0,0.75) 0%, transparent 100%);
+      /* Auto-hide slide animation */
+      transition: transform 0.45s cubic-bezier(0.4, 0, 0.2, 1);
+      transform: translateY(0);
+    }
+
+    /* Hidden state — slides completely below viewport */
+    #footer.tray-hidden {
+      transform: translateY(100%);
+    }
+
+    .shape-btn {
+      position: relative;
+      font-family: var(--font-display);
+      font-size: 9px;
+      letter-spacing: 0.25em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      background: transparent;
+      border: 1px solid rgba(0, 245, 255, 0.15);
+      padding: 8px 14px;
+      border-radius: var(--ui-radius);
+      cursor: none;
+      outline: none;
+      transition: color var(--transition),
+                  border-color var(--transition),
+                  background var(--transition),
+                  box-shadow var(--transition),
+                  transform var(--transition);
+      overflow: hidden;
+    }
+
+    .shape-btn::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: var(--cyan-dim);
+      opacity: 0;
+      transition: opacity var(--transition);
+    }
+
+    .shape-btn:hover,
+    .shape-btn.active {
+      color: var(--cyan);
+      border-color: var(--cyan);
+      box-shadow: var(--cyan-glow), inset 0 0 16px rgba(0,245,255,0.05);
+      transform: translateY(-2px);
+    }
+
+    .shape-btn:hover::before,
+    .shape-btn.active::before {
+      opacity: 1;
+    }
+
+    .shape-btn.active {
+      background: rgba(0, 245, 255, 0.08);
+    }
+
+    .shape-btn:active {
+      transform: translateY(0px) scale(0.97);
+    }
+
+    /* Gesture hover state — applied via JS when fingertip is over a button */
+    .shape-btn.gesture-hover {
+      color: var(--cyan);
+      border-color: var(--cyan);
+      box-shadow: var(--cyan-glow), inset 0 0 20px rgba(0,245,255,0.1);
+      transform: translateY(-3px) scale(1.06);
+      background: rgba(0, 245, 255, 0.1);
+    }
+    .shape-btn.gesture-hover::before { opacity: 1; }
+
+    /* Icon glyphs per shape */
+    .shape-btn .btn-icon {
+      display: block;
+      font-size: 14px;
+      margin-bottom: 4px;
+      line-height: 1;
+    }
+    .shape-btn .btn-label {
+      display: block;
+    }
+
+    /* ═══════════════════════════════════════════════
+       START OVERLAY
+    ═══════════════════════════════════════════════ */
+    #start-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #000;
+      cursor: none;
+    }
+
+    /* Animated grid bg */
+    #start-overlay::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(0,245,255,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,245,255,0.04) 1px, transparent 1px);
+      background-size: 60px 60px;
+      animation: grid-drift 20s linear infinite;
+    }
+
+    @keyframes grid-drift {
+      0%   { background-position: 0 0; }
+      100% { background-position: 60px 60px; }
+    }
+
+    /* Radial glow behind logo */
+    #start-overlay::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 500px;
+      height: 500px;
+      background: radial-gradient(circle, rgba(0,245,255,0.06) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    #overlay-content {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0;
+    }
+
+    #overlay-logo {
+      font-family: var(--font-display);
+      font-size: clamp(52px, 10vw, 96px);
+      font-weight: 900;
+      letter-spacing: 0.15em;
+      color: var(--cyan);
+      text-shadow: var(--cyan-glow), 0 0 80px rgba(0,245,255,0.25);
+      animation: logo-flicker 6s ease-in-out infinite;
+      line-height: 1;
+    }
+
+    @keyframes logo-flicker {
+      0%, 92%, 96%, 100% { opacity: 1; }
+      93%                 { opacity: 0.8; }
+      95%                 { opacity: 0.95; }
+    }
+
+    #overlay-tagline {
+      font-family: var(--font-mono);
+      font-size: clamp(10px, 1.5vw, 13px);
+      letter-spacing: 0.45em;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      margin-top: 10px;
+      margin-bottom: 56px;
+    }
+
+    #overlay-tagline span {
+      color: var(--magenta);
+      text-shadow: var(--mag-glow);
+    }
+
+    #start-btn {
+      position: relative;
+      font-family: var(--font-display);
+      font-size: 11px;
+      letter-spacing: 0.4em;
+      text-transform: uppercase;
+      color: var(--bg);
+      background: var(--cyan);
+      border: none;
+      padding: 16px 44px;
+      border-radius: var(--ui-radius);
+      cursor: none;
+      outline: none;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      box-shadow: var(--cyan-glow);
+      animation: btn-breathe 3s ease-in-out infinite;
+    }
+
+    @keyframes btn-breathe {
+      0%, 100% { box-shadow: var(--cyan-glow); }
+      50%       { box-shadow: 0 0 20px #00f5ff, 0 0 60px rgba(0,245,255,0.6); }
+    }
+
+    #start-btn:hover {
+      transform: scale(1.04);
+      box-shadow: 0 0 20px #00f5ff, 0 0 60px rgba(0,245,255,0.5);
+    }
+
+    #start-btn:active {
+      transform: scale(0.98);
+    }
+
+    /* Hint text below button */
+    #overlay-hint {
+      margin-top: 28px;
+      font-size: 9px;
+      letter-spacing: 0.25em;
+      color: rgba(232,248,255,0.25);
+      text-transform: uppercase;
+      text-align: center;
+      line-height: 1.8;
+    }
+
+    /* ── Gesture + Voice guide container ── */
+    #overlay-guides {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 18px;
+      z-index: 2;
+      width: max-content;
+      max-width: 96vw;
+    }
+
+    /* Section label */
+    .guide-section-label {
+      font-family: var(--font-mono);
+      font-size: 8px;
+      letter-spacing: 0.3em;
+      color: rgba(232,248,255,0.2);
+      text-transform: uppercase;
+      text-align: center;
+      margin-bottom: 2px;
+    }
+
+    /* Gesture guide icons */
+    #gesture-guide {
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .guide-item {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 5px;
+      opacity: 0.35;
+    }
+
+    .guide-icon {
+      font-size: 20px;
+      line-height: 1;
+    }
+
+    .guide-text {
+      font-size: 8px;
+      letter-spacing: 0.18em;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    /* Voice command catalog */
+    #voice-catalog {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .vcatalog-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .vcmd {
+      font-family: var(--font-mono);
+      font-size: 8px;
+      letter-spacing: 0.15em;
+      color: var(--cyan);
+      opacity: 0.45;
+      background: rgba(0, 245, 255, 0.05);
+      border: 1px solid rgba(0, 245, 255, 0.12);
+      padding: 3px 9px;
+      border-radius: 3px;
+      text-transform: lowercase;
+      white-space: nowrap;
+    }
+
+    .vcmd-label {
+      font-family: var(--font-mono);
+      font-size: 7px;
+      letter-spacing: 0.2em;
+      color: rgba(232,248,255,0.18);
+      text-transform: uppercase;
+      align-self: center;
+      padding: 0 4px;
+    }
+
+    /* ═══════════════════════════════════════════════
+       CORNER DECORATIONS
+    ═══════════════════════════════════════════════ */
+    .corner {
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      pointer-events: none;
+      z-index: 10;
+    }
+    .corner::before,
+    .corner::after {
+      content: '';
+      position: absolute;
+      background: var(--cyan);
+      opacity: 0.5;
+    }
+    .corner::before { width: 100%; height: 1.5px; }
+    .corner::after  { width: 1.5px; height: 100%; }
+
+    .corner.tl { top: 16px; left: 16px; }
+    .corner.tl::before { top: 0; left: 0; }
+    .corner.tl::after  { top: 0; left: 0; }
+
+    .corner.tr { top: 16px; right: 16px; }
+    .corner.tr::before { top: 0; right: 0; }
+    .corner.tr::after  { top: 0; right: 0; }
+
+    .corner.bl { bottom: 16px; left: 16px; }
+    .corner.bl::before { bottom: 0; left: 0; }
+    .corner.bl::after  { bottom: 0; left: 0; }
+
+    .corner.br { bottom: 16px; right: 16px; }
+    .corner.br::before { bottom: 0; right: 0; }
+    .corner.br::after  { bottom: 0; right: 0; }
+
+    /* ═══════════════════════════════════════════════
+       NOTIFICATION TOAST
+    ═══════════════════════════════════════════════ */
+    #toast {
+      position: absolute;
+      top: 70px;
+      left: 50%;
+      transform: translateX(-50%) translateY(-10px);
+      z-index: 20;
+      background: rgba(0,0,0,0.85);
+      border: 1px solid var(--border);
+      padding: 10px 22px;
+      border-radius: var(--ui-radius);
+      font-size: 10px;
+      letter-spacing: 0.25em;
+      color: var(--cyan);
+      text-transform: uppercase;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease, transform 0.3s ease;
+      white-space: nowrap;
+    }
+    #toast.show {
+      opacity: 1;
+      transform: translateX(-50%) translateY(0);
+    }
+
+    /* ═══════════════════════════════════════════════
+       RESPONSIVE
+    ═══════════════════════════════════════════════ */
+    @media (max-width: 600px) {
+      #footer { gap: 10px; padding: 12px 12px 14px; }
+      .shape-btn { padding: 7px 10px; font-size: 8px; }
+      .shape-btn .btn-icon { font-size: 12px; }
+      #logo-text { font-size: 17px; }
+    }
+
+    /* ═══════════════════════════════════════════════
+       SETTINGS — Gear button + Modal
+    ═══════════════════════════════════════════════ */
+
+    /* Button row wrapping gear + Initialize */
+    #overlay-btn-row {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+    }
+
+    /* Gear settings button */
+    #settings-gear-btn {
+      font-size: 18px;
+      width: 52px;
+      height: 52px;
+      background: transparent;
+      border: 1px solid rgba(0, 245, 255, 0.35);
+      border-radius: var(--ui-radius);
+      color: var(--cyan);
+      cursor: none;
+      outline: none;
+      transition: background 0.2s, box-shadow 0.2s, transform 0.2s;
+      flex-shrink: 0;
+      line-height: 1;
+    }
+    #settings-gear-btn:hover {
+      background: rgba(0, 245, 255, 0.08);
+      box-shadow: var(--cyan-glow);
+      transform: rotate(30deg);
+    }
+
+    /* Settings modal overlay */
+    #settings-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 200;
+      background: rgba(0, 0, 0, 0.88);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      backdrop-filter: blur(4px);
+    }
+    #settings-overlay.open { display: flex; }
+
+    /* Modal box */
+    #settings-modal {
+      position: relative;
+      width: min(520px, 92vw);
+      background: #05050d;
+      border: 1px solid rgba(0, 245, 255, 0.25);
+      border-radius: 6px;
+      box-shadow: 0 0 40px rgba(0, 245, 255, 0.12), 0 0 80px rgba(0,0,0,0.8);
+      padding: 28px 28px 24px;
+      animation: modal-in 0.25s cubic-bezier(0.25, 0.8, 0.25, 1);
+    }
+    @keyframes modal-in {
+      from { opacity: 0; transform: scale(0.94) translateY(10px); }
+      to   { opacity: 1; transform: scale(1)    translateY(0);     }
+    }
+
+    /* Modal header */
+    #settings-modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 22px;
+    }
+    #settings-modal-title {
+      font-family: var(--font-display);
+      font-size: 13px;
+      letter-spacing: 0.3em;
+      color: var(--cyan);
+      text-shadow: var(--cyan-glow);
+      text-transform: uppercase;
+    }
+    #settings-close-btn {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      letter-spacing: 0.2em;
+      color: var(--text-secondary);
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.1);
+      padding: 5px 12px;
+      border-radius: var(--ui-radius);
+      cursor: none;
+      transition: color 0.2s, border-color 0.2s;
+    }
+    #settings-close-btn:hover {
+      color: var(--cyan);
+      border-color: var(--cyan);
+    }
+
+    /* Mode toggle */
+    #settings-mode-toggle {
+      display: flex;
+      border: 1px solid rgba(0, 245, 255, 0.2);
+      border-radius: var(--ui-radius);
+      overflow: hidden;
+      margin-bottom: 22px;
+    }
+    .smode-btn {
+      flex: 1;
+      font-family: var(--font-display);
+      font-size: 10px;
+      letter-spacing: 0.25em;
+      text-transform: uppercase;
+      padding: 10px 8px;
+      border: none;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: none;
+      transition: background 0.2s, color 0.2s;
+    }
+    .smode-btn.active {
+      background: rgba(0, 245, 255, 0.12);
+      color: var(--cyan);
+      box-shadow: inset 0 0 12px rgba(0, 245, 255, 0.08);
+    }
+    .smode-btn:not(.active):hover { color: var(--text-primary); }
+    .smode-divider { width: 1px; background: rgba(0, 245, 255, 0.2); flex-shrink: 0; }
+
+    /* Field groups */
+    .sfield-group { display: flex; flex-direction: column; gap: 14px; }
+    .sfield-label {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: 0.25em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+      display: block;
+    }
+    .sfield-input,
+    .sfield-select {
+      width: 100%;
+      background: rgba(0,0,0,0.6);
+      border: 1px solid rgba(0, 245, 255, 0.15);
+      color: var(--text-primary);
+      padding: 10px 14px;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      border-radius: var(--ui-radius);
+      outline: none;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .sfield-input:focus,
+    .sfield-select:focus {
+      border-color: var(--cyan);
+      box-shadow: 0 0 8px rgba(0, 245, 255, 0.15);
+    }
+    .sfield-input::placeholder { color: rgba(232,248,255,0.2); }
+    .sfield-select option { background: #05050d; }
+
+    /* Help note */
+    .sfield-note {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: 0.1em;
+      color: rgba(232,248,255,0.3);
+      line-height: 1.6;
+      padding: 8px 12px;
+      background: rgba(0,0,0,0.4);
+      border: 1px solid rgba(255,255,255,0.06);
+      border-radius: var(--ui-radius);
+      margin-top: 4px;
+    }
+    .sfield-note strong { color: rgba(232,248,255,0.55); }
+
+    /* Status + Save row */
+    #settings-footer-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 22px;
+      padding-top: 18px;
+      border-top: 1px solid rgba(0, 245, 255, 0.08);
+      gap: 12px;
+    }
+    #settings-status {
+      font-family: var(--font-mono);
+      font-size: 9px;
+      letter-spacing: 0.2em;
+      color: var(--text-secondary);
+      flex: 1;
+      min-width: 0;
+    }
+    #settings-status.ok   { color: #4cff88; }
+    #settings-status.warn { color: var(--magenta); }
+    #settings-save-btn {
+      font-family: var(--font-display);
+      font-size: 10px;
+      letter-spacing: 0.3em;
+      text-transform: uppercase;
+      color: #000;
+      background: var(--cyan);
+      border: none;
+      padding: 10px 24px;
+      border-radius: var(--ui-radius);
+      cursor: none;
+      box-shadow: var(--cyan-glow);
+      transition: box-shadow 0.2s, transform 0.15s;
+      flex-shrink: 0;
+    }
+    #settings-save-btn:hover {
+      box-shadow: 0 0 20px #00f5ff, 0 0 40px rgba(0,245,255,0.4);
+      transform: translateY(-1px);
+    }
+
+    /* Voice picker divider */
+    .sfield-divider {
+      height: 1px;
+      background: rgba(0, 245, 255, 0.08);
+      margin: 18px 0 16px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ═══ START OVERLAY ═══ -->
+  <div id="start-overlay">
+    <div id="overlay-content">
+      <div id="overlay-logo">ZombAI</div>
+      <div id="overlay-tagline">Gesture · Voice · <span>Zero Touch</span></div>
+
+      <div id="overlay-btn-row">
+        <button id="settings-gear-btn" onclick="openSettings()" title="AI Voice Settings">⚙</button>
+        <button id="start-btn" onclick="initApp()">Initialize</button>
+      </div>
+
+      <div id="overlay-hint">
+        Allow camera access when prompted<br/>
+        Speak or gesture to control the particle field
+      </div>
+    </div>
+
+    <!-- Gesture + Voice catalog -->
+    <div id="overlay-guides">
+
+      <!-- Gesture reference -->
+      <div>
+        <div class="guide-section-label">Gestures</div>
+        <div id="gesture-guide">
+          <div class="guide-item"><span class="guide-icon">🖐</span><span class="guide-text">Expand</span></div>
+          <div class="guide-item"><span class="guide-icon">🤌</span><span class="guide-text">Shrink</span></div>
+          <div class="guide-item"><span class="guide-icon">✊</span><span class="guide-text">Explode</span></div>
+          <div class="guide-item"><span class="guide-icon">✌️</span><span class="guide-text">Color</span></div>
+          <div class="guide-item"><span class="guide-icon">☝️</span><span class="guide-text">Rotate</span></div>
+          <div class="guide-item"><span class="guide-icon">🤲</span><span class="guide-text">Rip</span></div>
+          <div class="guide-item"><span class="guide-icon">👈👉</span><span class="guide-text">Swipe</span></div>
+        </div>
+      </div>
+
+      <!-- Voice command catalog -->
+      <div id="voice-catalog">
+        <div class="guide-section-label">🎤 Voice Commands</div>
+
+        <div class="vcatalog-row">
+          <span class="vcmd-label">Shapes →</span>
+          <span class="vcmd">sphere</span>
+          <span class="vcmd">circle</span>
+          <span class="vcmd">cube</span>
+          <span class="vcmd">cuboid</span>
+          <span class="vcmd">square</span>
+          <span class="vcmd">rectangle</span>
+          <span class="vcmd">line</span>
+        </div>
+
+        <div class="vcatalog-row">
+          <span class="vcmd-label">Colors →</span>
+          <span class="vcmd">neon</span>
+          <span class="vcmd">fire</span>
+          <span class="vcmd">green</span>
+          <span class="vcmd">white</span>
+          <span class="vcmd">color</span>
+        </div>
+
+        <div class="vcatalog-row">
+          <span class="vcmd-label">Effects →</span>
+          <span class="vcmd">explode</span>
+          <span class="vcmd">rip</span>
+          <span class="vcmd">expand</span>
+          <span class="vcmd">shrink</span>
+          <span class="vcmd">reset</span>
+          <span class="vcmd">next</span>
+          <span class="vcmd">back</span>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ═══ MAIN APP ═══ -->
+  <div id="app">
+
+    <!-- Canvas layers -->
+    <canvas id="webgl-canvas"></canvas>
+    <canvas id="skeleton-canvas"></canvas>
+    <video  id="camera-feed" playsinline autoplay muted></video>
+
+    <!-- Scanline texture -->
+    <div id="scanlines"></div>
+
+    <!-- Corner accents -->
+    <div class="corner tl"></div>
+    <div class="corner tr"></div>
+    <div class="corner bl"></div>
+    <div class="corner br"></div>
+
+    <!-- Header -->
+    <header id="header">
+      <div id="logo">
+        <span id="logo-text">ZombAI</span>
+        <span id="logo-sub">TouchLess v1</span>
+      </div>
+      <div id="header-right">
+        <div id="preset-label">Neon Cyan</div>
+        <div id="voice-indicator">
+          <div id="voice-dot"></div>
+          <span id="voice-status">Voice Off</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Toast notification -->
+    <div id="toast"></div>
+
+    <!-- HUD -->
+    <div id="hud">
+      <div id="gesture-label">—</div>
+      <div id="status-line">Ready</div>
+      <div id="hand-count">
+        <span class="hand-badge left"  id="badge-left"></span>
+        <span class="hand-badge right" id="badge-right"></span>
+        <span id="hand-count-text">No hands detected</span>
+      </div>
+    </div>
+
+    <!-- Rip progress -->
+    <div id="rip-bar-wrap">
+      <div id="rip-label">⟵ Pulling Apart ⟶</div>
+      <div id="rip-bar"><div id="rip-fill"></div></div>
+    </div>
+
+    <!-- Reform progress -->
+    <div id="reform-bar-wrap">
+      <div id="reform-label">Reforming...</div>
+      <div id="reform-bar"><div id="reform-fill"></div></div>
+    </div>
+
+    <!-- Footer shape buttons -->
+    <footer id="footer">
+      <button class="shape-btn active" data-shape="sphere">
+        <span class="btn-icon">●</span>
+        <span class="btn-label">Sphere</span>
+      </button>
+      <button class="shape-btn" data-shape="circle">
+        <span class="btn-icon">○</span>
+        <span class="btn-label">Circle</span>
+      </button>
+      <button class="shape-btn" data-shape="cube">
+        <span class="btn-icon">◻</span>
+        <span class="btn-label">Cube</span>
+      </button>
+      <button class="shape-btn" data-shape="cuboid">
+        <span class="btn-icon">▭</span>
+        <span class="btn-label">Cuboid</span>
+      </button>
+      <button class="shape-btn" data-shape="square">
+        <span class="btn-icon">■</span>
+        <span class="btn-label">Square</span>
+      </button>
+      <button class="shape-btn" data-shape="rectangle">
+        <span class="btn-icon">▬</span>
+        <span class="btn-label">Rect</span>
+      </button>
+      <button class="shape-btn" data-shape="line">
+        <span class="btn-icon">—</span>
+        <span class="btn-label">Line</span>
+      </button>
+    </footer>
+
+  </div><!-- /#app -->
+
+  <!-- ═══ SETTINGS MODAL ═══ -->
+  <div id="settings-overlay">
+    <div id="settings-modal">
+
+      <!-- Header -->
+      <div id="settings-modal-header">
+        <span id="settings-modal-title">⚙ AI Voice Config</span>
+        <button id="settings-close-btn" onclick="closeSettings()">✕ Close</button>
+      </div>
+
+      <!-- Mode toggle -->
+      <div id="settings-mode-toggle">
+        <button class="smode-btn active" id="smode-cloud" onclick="settingsSetMode('cloud')">
+          ☁ Cloud — Anthropic
+        </button>
+        <div class="smode-divider"></div>
+        <button class="smode-btn" id="smode-local" onclick="settingsSetMode('local')">
+          🖥 Local AI — Ollama
+        </button>
+      </div>
+
+      <!-- Cloud fields -->
+      <div id="sfields-cloud" class="sfield-group">
+        <div>
+          <label class="sfield-label">🔑 Anthropic API Key <span style="color:var(--magenta);"> * required</span></label>
+          <input class="sfield-input" type="password" id="s-anthropic-key"
+                 placeholder="sk-ant-api03-…" oninput="settingsValidate()" autocomplete="off"/>
+        </div>
+        <div class="sfield-note">
+          ⚠ <strong>Browser-direct API call.</strong> Key is stored in memory only — never written to disk.
+          Use Chrome or Edge. Requires <code style="color:#00f5ff;">anthropic-dangerous-direct-browser-access</code> header.
+        </div>
+      </div>
+
+      <!-- Local fields -->
+      <div id="sfields-local" class="sfield-group" style="display:none;">
+        <div>
+          <label class="sfield-label">🌐 Local Endpoint URL</label>
+          <input class="sfield-input" type="text" id="s-local-endpoint"
+                 placeholder="http://localhost:11434/v1"
+                 value="http://localhost:11434/v1" oninput="settingsValidate()"/>
+        </div>
+        <div>
+          <label class="sfield-label">🤖 Model</label>
+          <select class="sfield-select" id="s-local-model" onchange="settingsSyncModel()">
+            <option value="qwen2.5:72b">qwen2.5:72b — Best for 64GB Mac</option>
+            <option value="qwen2.5:32b" selected>qwen2.5:32b — Good for 32GB Mac</option>
+            <option value="llama3.3:70b">llama3.3:70b — Great all-rounder</option>
+            <option value="mistral-large">mistral-large</option>
+            <option value="deepseek-r1:70b">deepseek-r1:70b</option>
+            <option value="custom">Custom model name…</option>
+          </select>
+        </div>
+        <div id="s-custom-model-wrap" style="display:none;">
+          <label class="sfield-label">✏️ Custom Model Name</label>
+          <input class="sfield-input" type="text" id="s-local-model-custom"
+                 placeholder="e.g. kimi-k2-instruct" oninput="settingsValidate()"/>
+        </div>
+        <div class="sfield-note">
+          ⚠ <strong>CORS required.</strong> Start Ollama with:
+          <code style="color:#00f5ff;">OLLAMA_ORIGINS=* ollama serve</code>
+        </div>
+      </div>
+
+      <!-- Voice picker — shared across Cloud + Local modes -->
+      <div class="sfield-divider"></div>
+      <div>
+        <label class="sfield-label">🔊 Speech Voice</label>
+        <select class="sfield-select" id="s-voice-select" onchange="settingsValidate()">
+          <option value="auto">Auto — Best available English voice</option>
+          <!-- Populated by JS on modal open -->
+        </select>
+      </div>
+
+      <!-- Status + Save -->
+      <div id="settings-footer-row">
+        <span id="settings-status">Configure AI Voice above</span>
+        <button id="settings-save-btn" onclick="saveSettings()">Save</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Custom cursor -->
+  <div id="cursor"></div>
+
+  <!-- ═══════════════════════════════════════════════
+       UI JAVASCRIPT (shell only — no Three.js yet)
+  ═══════════════════════════════════════════════ -->
+  <script>
+    /* ── Custom cursor ─────────────────────────── */
+    const cursor = document.getElementById('cursor');
+    document.addEventListener('mousemove', e => {
+      cursor.style.left = e.clientX + 'px';
+      cursor.style.top  = e.clientY + 'px';
+    });
+    document.addEventListener('mousedown', () => cursor.classList.add('active'));
+    document.addEventListener('mouseup',   () => cursor.classList.remove('active'));
+
+    /* ── Toast helper ─────────────────────────── */
+    let toastTimer;
+    function showToast(msg, duration = 2200) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => el.classList.remove('show'), duration);
+    }
+
+    /* ── Gesture label helper ─────────────────── */
+    let gestureLabelTimer;
+    function showGesture(label) {
+      const el = document.getElementById('gesture-label');
+      el.textContent = label;
+      el.classList.add('visible');
+      clearTimeout(gestureLabelTimer);
+      gestureLabelTimer = setTimeout(() => el.classList.remove('visible'), 1800);
+    }
+
+    /* ── Shape button active state ────────────── */
+    const shapeBtns = document.querySelectorAll('.shape-btn');
+    shapeBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        shapeBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        if (typeof morphToShape === 'function') morphToShape(btn.dataset.shape);
+        showToast('Shape: ' + btn.dataset.shape.toUpperCase());
+      });
+    });
+
+    /* ── Preset label ─────────────────────────── */
+    function showPreset(name) {
+      const el = document.getElementById('preset-label');
+      el.textContent = name;
+      el.classList.add('visible');
+    }
+
+    /* ── Voice indicator ──────────────────────── */
+    function setVoiceStatus(listening) {
+      const dot    = document.getElementById('voice-dot');
+      const status = document.getElementById('voice-status');
+      if (listening) {
+        dot.classList.add('listening');
+        status.textContent = 'Listening';
+      } else {
+        dot.classList.remove('listening');
+        status.textContent = 'Voice Off';
+      }
+    }
+
+    /* ── Hand badges ──────────────────────────── */
+    function updateHandBadges(leftActive, rightActive) {
+      document.getElementById('badge-left').classList.toggle('active', leftActive);
+      document.getElementById('badge-right').classList.toggle('active', rightActive);
+      const count = (leftActive ? 1 : 0) + (rightActive ? 1 : 0);
+      const txt = count === 0 ? 'No hands detected'
+                : count === 1 ? '1 hand detected'
+                :               '2 hands detected';
+      document.getElementById('hand-count-text').textContent = txt;
+    }
+
+    /* ── Rip bar ──────────────────────────────── */
+    function setRipProgress(pct) {
+      // pct: 0–100
+      document.getElementById('rip-fill').style.width = pct + '%';
+      const wrap = document.getElementById('rip-bar-wrap');
+      wrap.classList.toggle('visible', pct > 0 && pct < 100);
+    }
+
+    /* ── Reform bar ───────────────────────────── */
+    function setReformProgress(pct) {
+      document.getElementById('reform-fill').style.width = pct + '%';
+      const wrap = document.getElementById('reform-bar-wrap');
+      wrap.classList.toggle('visible', pct > 0 && pct < 100);
+    }
+
+    /* ── App init (called by start button) ─────── */
+    function initApp() {
+      const overlay = document.getElementById('start-overlay');
+      overlay.style.transition = 'opacity 0.7s ease';
+      overlay.style.opacity = '0';
+      setTimeout(() => overlay.style.display = 'none', 700);
+
+      document.getElementById('status-line').textContent = 'Initializing...';
+      showPreset('Neon Cyan');
+
+      // Three.js + MediaPipe + Voice + Swipe init
+      if (typeof initThree     === 'function') initThree();
+      if (typeof initMediaPipe === 'function') initMediaPipe();
+      if (typeof initVoice     === 'function') initVoice();
+      if (typeof initSwipe     === 'function') initSwipe();
+      if (typeof initTray      === 'function') initTray();
+
+      // Birth blast — slight delay so overlay fade finishes first
+      setTimeout(() => {
+        if (typeof triggerBirthAnimation === 'function') triggerBirthAnimation();
+      }, 400);
+    }
+
+    /* ── Resize handler (stub — wired in 1B) ─── */
+    window.addEventListener('resize', () => {
+      if (typeof onResize === 'function') onResize();
+    });
+  </script>
+
+  <!-- ═══════════════════════════════════════════════
+       STEP 1B-i  : Three.js r128 loaded via CDN (head)
+       STEP 1B-ii : Three.js Scene + 200k Particle BufferGeometry
+  ═══════════════════════════════════════════════ -->
+  <script>
+    /* ╔══════════════════════════════════════════╗
+       ║  CONSTANTS                               ║
+       ╚══════════════════════════════════════════╝ */
+    const PARTICLE_COUNT = 200000;
+    const SPHERE_RADIUS  = 0.9;   // halved from 1.8 per user request
+
+    /* ╔══════════════════════════════════════════╗
+       ║  THREE.JS CORE OBJECTS                   ║
+       ╚══════════════════════════════════════════╝ */
+    let scene, camera, renderer;
+    let particleSystem;   // THREE.Points
+    let geometry;         // THREE.BufferGeometry
+
+    /* Raw typed arrays — one entry per particle */
+    let aBasePosArr;   // Float32Array (N*3) — current start-of-morph positions
+    let aTargPosArr;   // Float32Array (N*3) — destination shape positions
+    let aExpVelArr;    // Float32Array (N*3) — explosion velocities (pre-baked)
+    let aGroupArr;     // Float32Array (N)   — 0=left half, 1=right half (rip)
+    let aSizeArr;      // Float32Array (N)   — per-particle size variation
+
+    /* ╔══════════════════════════════════════════╗
+       ║  THREE.JS INIT                           ║
+       ╚══════════════════════════════════════════╝ */
+    function initThree() {
+      const canvas = document.getElementById('webgl-canvas');
+
+      /* Scene */
+      scene = new THREE.Scene();
+
+      /* Camera — use window dimensions (canvas.clientWidth is 0 before render) */
+      camera = new THREE.PerspectiveCamera(
+        60,
+        window.innerWidth / window.innerHeight,
+        0.01,
+        1000
+      );
+      camera.position.z = 3.5;   // adjusted for smaller sphere radius
+
+      /* Renderer */
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setClearColor(0x000000, 1);
+
+      /* Build particle geometry */
+      buildParticleGeometry();
+
+      /* Initialise skeleton canvas pixel buffer */
+      initSkeletonCanvas();
+
+      document.getElementById('status-line').textContent =
+        'Particles: ' + PARTICLE_COUNT.toLocaleString();
+
+      console.log('[ZombAI] Three.js r128 scene ready.');
+      console.log('[ZombAI] Particle buffer:', PARTICLE_COUNT, 'points.');
+
+      /* Start render loop immediately */
+      animate();
+    }
+
+    /* ╔══════════════════════════════════════════╗
+       ║  BUILD 200k PARTICLE BUFFER GEOMETRY     ║
+       ╚══════════════════════════════════════════╝ */
+    function buildParticleGeometry() {
+      const N = PARTICLE_COUNT;
+
+      /* Allocate typed arrays */
+      aBasePosArr = new Float32Array(N * 3);
+      aTargPosArr = new Float32Array(N * 3);
+      aExpVelArr  = new Float32Array(N * 3);
+      aGroupArr   = new Float32Array(N);
+      aSizeArr    = new Float32Array(N);
+
+      /* Seed positions:
+         aBasePos → near-zero (nuclear core) — particles invisible at first render
+         aTargPos → sphere surface           — birth animation pulls them here
+         This prevents the sphere flashing visible before triggerBirthAnimation fires */
+      for (let i = 0; i < N; i++) {
+        const i3 = i * 3;
+
+        /* aBasePos: tiny random jitter around origin — the "core" */
+        const jitter = 0.008;
+        aBasePosArr[i3]     = (Math.random() - 0.5) * jitter;
+        aBasePosArr[i3 + 1] = (Math.random() - 0.5) * jitter;
+        aBasePosArr[i3 + 2] = (Math.random() - 0.5) * jitter;
+
+        /* aTargPos: proper sphere surface — the birth target */
+        let x, y, z, len;
+        do {
+          x = Math.random() * 2 - 1;
+          y = Math.random() * 2 - 1;
+          z = Math.random() * 2 - 1;
+          len = Math.sqrt(x*x + y*y + z*z);
+        } while (len > 1 || len < 1e-6);
+        const r = SPHERE_RADIUS;
+        aTargPosArr[i3]     = (x / len) * r;
+        aTargPosArr[i3 + 1] = (y / len) * r;
+        aTargPosArr[i3 + 2] = (z / len) * r;
+
+        /* Pre-bake explosion velocity — random unit sphere * magnitude */
+        const mag = Math.random() * 0.5 + 0.5;
+        let ex = Math.random() * 2 - 1;
+        let ey = Math.random() * 2 - 1;
+        let ez = Math.random() * 2 - 1;
+        const el = Math.sqrt(ex*ex + ey*ey + ez*ez) || 1;
+        aExpVelArr[i3]     = (ex / el) * mag;
+        aExpVelArr[i3 + 1] = (ey / el) * mag;
+        aExpVelArr[i3 + 2] = (ez / el) * mag;
+
+        /* Group: left=0, right=1 based on TARGET X (base is near-zero, useless for split) */
+        aGroupArr[i] = aTargPosArr[i3] >= 0 ? 1.0 : 0.0;
+
+        /* Size variation 0.4 - 1.2 */
+        aSizeArr[i] = Math.random() * 0.8 + 0.4;
+      }
+
+      /* Create BufferGeometry */
+      geometry = new THREE.BufferGeometry();
+
+      /* Dummy zeroed position (real positions come from shader) */
+      geometry.setAttribute('position',
+        new THREE.BufferAttribute(new Float32Array(N * 3), 3));
+
+      /* Custom attributes */
+      geometry.setAttribute('aBasePos',
+        new THREE.BufferAttribute(aBasePosArr, 3));
+      geometry.setAttribute('aTargPos',
+        new THREE.BufferAttribute(aTargPosArr, 3));
+      geometry.setAttribute('aExpVel',
+        new THREE.BufferAttribute(aExpVelArr,  3));
+      geometry.setAttribute('aGroup',
+        new THREE.BufferAttribute(aGroupArr,   1));
+      geometry.setAttribute('aSize',
+        new THREE.BufferAttribute(aSizeArr,    1));
+
+      /* Frustum culling OFF — shader computes true positions */
+      geometry.frustumCulled = false;
+
+      /* ShaderMaterial — 1B-iii */
+      const material = buildShaderMaterial();
+
+      particleSystem = new THREE.Points(geometry, material);
+      scene.add(particleSystem);
+
+      console.log('[ZombAI] BufferGeometry attributes:', Object.keys(geometry.attributes));
+      console.log('[ZombAI] ShaderMaterial uniforms ready.');
+    }
+
+    /* ╔══════════════════════════════════════════╗
+       ║  STEP 1B-iii — SHADER UNIFORMS           ║
+       ╚══════════════════════════════════════════╝ */
+
+    /* Global uniforms — other modules update these directly */
+    const UNI = {
+      uMorphT:  { value: 0.0 },   // morph progress 0→1
+      uExpT:    { value: 0.0 },   // explosion timer 0→1
+      uScale:   { value: 1.0 },   // global scale
+      uStretchY:{ value: 1.0 },   // vertical stretch (two-hand vertical)
+      uRipX:    { value: 0.0 },   // horizontal rip offset
+      uTime:    { value: 0.0 },   // elapsed seconds
+      uColor1:  { value: new THREE.Color(0x00f5ff) },  // cyan
+      uColor2:  { value: new THREE.Color(0xff00c8) },  // magenta
+    };
+
+    /* ── VERTEX SHADER ───────────────────────── */
+    const VERT_SHADER = /* glsl */`
+      // Custom attributes
+      attribute vec3  aBasePos;
+      attribute vec3  aTargPos;
+      attribute vec3  aExpVel;
+      attribute float aGroup;
+      attribute float aSize;
+
+      // Uniforms
+      uniform float uMorphT;    // lerp base→target
+      uniform float uExpT;      // explosion progress 0→1
+      uniform float uScale;     // global scale
+      uniform float uStretchY;  // vertical stretch multiplier
+      uniform float uRipX;      // horizontal rip separation
+      uniform float uTime;      // elapsed time
+
+      // Passed to fragment shader
+      varying float vAlpha;
+      varying float vGroup;
+
+      void main() {
+        // 1. Morph: lerp between base and target positions
+        vec3 pos = mix(aBasePos, aTargPos, clamp(uMorphT, 0.0, 1.0));
+
+        // 2. Explosion: push particles outward along pre-baked velocity
+        //    uExpT ramps 0→1 then back to 0 — peaks at t=0.5
+        float expForce = uExpT * 3.8;
+        pos += aExpVel * expForce;
+
+        // 3. Rip: split left (group=0) and right (group=1) halves
+        //    aGroup is 0 or 1; map to -1 / +1 for direction
+        float ripDir = aGroup * 2.0 - 1.0;   // -1 or +1
+        pos.x += ripDir * uRipX;
+
+        // 4. Global scale
+        pos *= uScale;
+
+        // 5. Vertical stretch (two-hand spread/squeeze)
+        pos.y *= uStretchY;
+
+        // 6. Subtle time-based ripple on surface
+        float ripple = sin(uTime * 1.4 + aBasePos.y * 2.8) * 0.018 * uScale;
+        pos += normalize(aBasePos + vec3(0.001)) * ripple;
+
+        // 7. Project to clip space
+        vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
+        gl_Position = projectionMatrix * mvPos;
+
+        // 8. Point size — larger when closer, scale with aSize
+        gl_PointSize = aSize * uScale * (260.0 / -mvPos.z);
+        gl_PointSize = clamp(gl_PointSize, 0.5, 6.0);
+
+        // 9. Alpha: fade near explosion peak, full otherwise
+        vAlpha = 1.0 - uExpT * 0.35;
+        vGroup = aGroup;
+      }
+    `;
+
+    /* ── FRAGMENT SHADER ─────────────────────── */
+    const FRAG_SHADER = /* glsl */`
+      uniform vec3  uColor1;   // primary color
+      uniform vec3  uColor2;   // secondary color
+      uniform float uTime;
+
+      varying float vAlpha;
+      varying float vGroup;
+
+      void main() {
+        // Circular soft particle — discard square corners
+        vec2  uv   = gl_PointCoord - 0.5;
+        float dist = length(uv);
+        if (dist > 0.5) discard;
+
+        // Soft radial falloff — bright core, fading edge
+        float core  = 1.0 - smoothstep(0.0, 0.22, dist);
+        float glow  = 1.0 - smoothstep(0.18, 0.5,  dist);
+        float alpha = (core * 0.85 + glow * 0.35) * vAlpha;
+
+        // Color: blend uColor1 and uColor2 by group + subtle time wave
+        float wave = sin(uTime * 0.6 + vGroup * 3.14159) * 0.5 + 0.5;
+        vec3  col  = mix(uColor1, uColor2, wave * 0.3 + vGroup * 0.15);
+
+        // Brighten core slightly
+        col += core * 0.12;
+
+        gl_FragColor = vec4(col, alpha);
+      }
+    `;
+
+    /* ── Build ShaderMaterial ─────────────────── */
+    function buildShaderMaterial() {
+      return new THREE.ShaderMaterial({
+        uniforms:       UNI,
+        vertexShader:   VERT_SHADER,
+        fragmentShader: FRAG_SHADER,
+        transparent:    true,
+        depthWrite:     false,
+        blending:       THREE.AdditiveBlending,
+      });
+    }
+
+    /* ╔══════════════════════════════════════════╗
+       ║  RESIZE                                  ║
+       ╚══════════════════════════════════════════╝ */
+    function onResize() {
+      if (!renderer) return;
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight, false);
+      // Keep skeleton canvas pixel buffer in sync
+      const sc = document.getElementById('skeleton-canvas');
+      sc.width  = window.innerWidth;
+      sc.height = window.innerHeight;
+    }
+
+    /* ╔══════════════════════════════════════════╗
+       ║  MINIMAL RENDER LOOP (temp until 1B-v)   ║
+       ║  Keeps particles visible on screen.       ║
+       ╚══════════════════════════════════════════╝ */
+    let clock = new THREE.Clock();
+
+    /* ╔══════════════════════════════════════════╗
+       ║  STEP 1B-iv — 7 SHAPE GENERATORS         ║
+       ╚══════════════════════════════════════════╝ */
+
+    /* Helper: write x,y,z into a Float32Array at index i3 */
+    function setXYZ(arr, i3, x, y, z) {
+      arr[i3]     = x;
+      arr[i3 + 1] = y;
+      arr[i3 + 2] = z;
+    }
+
+    /* ── SPHERE (uniform surface) ─── */
+    function genSphere(arr, N, r) {
+      r = r || SPHERE_RADIUS;
+      for (let i = 0; i < N; i++) {
+        let x, y, z, len;
+        do {
+          x = Math.random() * 2 - 1;
+          y = Math.random() * 2 - 1;
+          z = Math.random() * 2 - 1;
+          len = Math.sqrt(x*x + y*y + z*z);
+        } while (len > 1 || len < 1e-6);
+        setXYZ(arr, i * 3, (x/len)*r, (y/len)*r, (z/len)*r);
+      }
+    }
+
+    /* ── CIRCLE (flat disc, XY plane) ─── */
+    function genCircle(arr, N, r) {
+      r = r || SPHERE_RADIUS;
+      for (let i = 0; i < N; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const rad   = r * Math.sqrt(Math.random());
+        setXYZ(arr, i * 3, Math.cos(angle)*rad, Math.sin(angle)*rad, 0);
+      }
+    }
+
+    /* ── SQUARE (flat 2D, XY plane) ─── */
+    function genSquare(arr, N, s) {
+      s = s || SPHERE_RADIUS * 1.4;
+      for (let i = 0; i < N; i++) {
+        setXYZ(arr, i * 3,
+          (Math.random() * 2 - 1) * s,
+          (Math.random() * 2 - 1) * s,
+          0);
+      }
+    }
+
+    /* ── RECTANGLE (wider, flat XY) ─── */
+    function genRectangle(arr, N) {
+      const w = SPHERE_RADIUS * 2.4, h = SPHERE_RADIUS * 1.2;
+      for (let i = 0; i < N; i++) {
+        setXYZ(arr, i * 3,
+          (Math.random() * 2 - 1) * w,
+          (Math.random() * 2 - 1) * h,
+          0);
+      }
+    }
+
+    /* ── CUBE (3D, uniform fill) ─── */
+    function genCube(arr, N, s) {
+      s = s || SPHERE_RADIUS * 1.2;
+      for (let i = 0; i < N; i++) {
+        setXYZ(arr, i * 3,
+          (Math.random() * 2 - 1) * s,
+          (Math.random() * 2 - 1) * s,
+          (Math.random() * 2 - 1) * s);
+      }
+    }
+
+    /* ── CUBOID (non-uniform 3D) ─── */
+    function genCuboid(arr, N) {
+      const wx = SPHERE_RADIUS * 2.2,
+            wy = SPHERE_RADIUS * 0.9,
+            wz = SPHERE_RADIUS * 1.1;
+      for (let i = 0; i < N; i++) {
+        setXYZ(arr, i * 3,
+          (Math.random() * 2 - 1) * wx,
+          (Math.random() * 2 - 1) * wy,
+          (Math.random() * 2 - 1) * wz);
+      }
+    }
+
+    /* ── LINE (along X axis) ─── */
+    function genLine(arr, N, len) {
+      len = len || SPHERE_RADIUS * 2.8;
+      for (let i = 0; i < N; i++) {
+        setXYZ(arr, i * 3,
+          (i / N * 2 - 1) * len,
+          (Math.random() - 0.5) * 0.05,   // tiny scatter so it's not razor-thin
+          (Math.random() - 0.5) * 0.05);
+      }
+    }
+
+    /* ── Shape dispatch map ─── */
+    const SHAPE_GENERATORS = {
+      sphere:    genSphere,
+      circle:    genCircle,
+      square:    genSquare,
+      rectangle: genRectangle,
+      cube:      genCube,
+      cuboid:    genCuboid,
+      line:      genLine,
+    };
+
+    /* ── morphToShape — called by buttons, voice, gestures ─── */
+    function morphToShape(shapeName) {
+      if (!geometry)    return;   // scene not ready
+      if (birthActive)  return;   // don't interrupt birth animation
+      const gen = SHAPE_GENERATORS[shapeName];
+      if (!gen) { console.warn('[ZombAI] Unknown shape:', shapeName); return; }
+
+      // 1. Capture current interpolated positions → aBasePos
+      //    (so morph always starts from where particles ARE now)
+      const t = UNI.uMorphT.value;
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const i3 = i * 3;
+        aBasePosArr[i3]     = aBasePosArr[i3]     + (aTargPosArr[i3]     - aBasePosArr[i3])     * t;
+        aBasePosArr[i3 + 1] = aBasePosArr[i3 + 1] + (aTargPosArr[i3 + 1] - aBasePosArr[i3 + 1]) * t;
+        aBasePosArr[i3 + 2] = aBasePosArr[i3 + 2] + (aTargPosArr[i3 + 2] - aBasePosArr[i3 + 2]) * t;
+      }
+
+      // 2. Generate new target positions
+      gen(aTargPosArr, PARTICLE_COUNT);
+
+      // 3. Update rip groups based on new target X sign
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        aGroupArr[i] = aTargPosArr[i * 3] >= 0 ? 1.0 : 0.0;
+      }
+
+      // 4. Push updated buffers to GPU
+      geometry.attributes.aBasePos.needsUpdate = true;
+      geometry.attributes.aTargPos.needsUpdate = true;
+      geometry.attributes.aGroup.needsUpdate   = true;
+
+      // 5. Reset morph progress and start transition
+      UNI.uMorphT.value = 0.0;
+      morphActive       = true;
+      morphStartTime    = clock.getElapsedTime();
+
+      if (typeof zombaiSpeak === 'function') zombaiSpeak(shapeName);
+      console.log('[ZombAI] Morphing to:', shapeName);
+    }
+
+    // ── Morph progress state ───────────────────────────
+    let morphActive    = false;
+    const MORPH_DURATION = 1.5;
+    let morphStartTime = 0;
+
+    // ── Birth animation state (initial load only) ────────────────────────────
+    // Phase 1 (0 → 18% of duration) : hold the blast peak, particles scattered
+    // Phase 2 (18% → 100%)          : uExpT collapses, uMorphT rises → sphere forms
+    let birthActive    = false;
+    let birthStartTime = 0;
+    const BIRTH_DURATION = 2.8;   // seconds — total blast-to-sphere duration
+
+    function triggerBirthAnimation() {
+      if (!geometry) return;
+
+      // Collapse all base positions to near-center (the "nuclear core")
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const i3     = i * 3;
+        const jitter = 0.015;   // tiny random offset so they don't all sit at exact 0,0,0
+        aBasePosArr[i3]     = (Math.random() - 0.5) * jitter;
+        aBasePosArr[i3 + 1] = (Math.random() - 0.5) * jitter;
+        aBasePosArr[i3 + 2] = (Math.random() - 0.5) * jitter;
+      }
+      geometry.attributes.aBasePos.needsUpdate = true;
+
+      // Start fully exploded
+      UNI.uMorphT.value = 0.0;
+      UNI.uExpT.value   = 1.0;
+
+      birthActive    = true;
+      birthStartTime = clock.getElapsedTime();
+      console.log('[ZombAI] Birth animation triggered');
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      const t = clock.getElapsedTime();
+      UNI.uTime.value = t;
+
+      // ── Birth animation (initial load only, runs before morph) ──
+      if (birthActive) {
+        const elapsed  = t - birthStartTime;
+        const progress = Math.min(elapsed / BIRTH_DURATION, 1.0);
+
+        if (progress < 0.18) {
+          // Phase 1: blast peak — particles fly outward from center
+          UNI.uExpT.value   = 1.0;
+          UNI.uMorphT.value = 0.0;
+        } else {
+          // Phase 2: collapse into sphere
+          const p2    = (progress - 0.18) / 0.82;
+          // Ease-out cubic — fast start, gentle landing
+          const eased = 1 - Math.pow(1 - p2, 3);
+          UNI.uExpT.value   = 1.0 - eased;
+          UNI.uMorphT.value = eased;
+        }
+
+        if (progress >= 1.0) {
+          birthActive       = false;
+          UNI.uExpT.value   = 0.0;
+          UNI.uMorphT.value = 1.0;
+          console.log('[ZombAI] Birth animation complete');
+        }
+      }
+
+      // ── Regular shape morph (NOT triggered during birth) ──
+      if (morphActive && !birthActive) {
+        const elapsed  = t - morphStartTime;
+        const progress = Math.min(elapsed / MORPH_DURATION, 1.0);
+        // Ease in-out cubic
+        UNI.uMorphT.value = progress < 0.5
+          ? 4 * progress * progress * progress
+          : 1 - Math.pow(-2 * progress + 2, 3) / 2;
+        if (progress >= 1.0) morphActive = false;
+      }
+
+      // Gesture animations — scale lerp, explosion arc, rotation (1D)
+      if (typeof updateGestureAnimations === 'function') updateGestureAnimations();
+
+      renderer.render(scene, camera);
+    }
+  </script>
+
+  <!-- ═══════════════════════════════════════════════
+       STEP 1C-i  : MediaPipe Hands CDN (head)
+       STEP 1C-ii : Camera via getUserMedia + rAF loop
+                    (no camera_utils dependency)
+  ═══════════════════════════════════════════════ -->
+  <script>
+    /* ╔══════════════════════════════════════════╗
+       ║  GLOBAL HAND DATA                        ║
+       ╚══════════════════════════════════════════╝ */
+    // left / right each hold a 21-landmark array or null
+    // MediaPipe 'Right' label = appears LEFT on mirrored screen
+    // MediaPipe 'Left'  label = appears RIGHT on mirrored screen
+    const handData = { left: null, right: null };
+    let activeHandCount = 0;
+    let mpHands = null;           // MediaPipe Hands instance
+
+    /* Hand skeleton bone pairs (22 connections) */
+    const HAND_CONNECTIONS = [
+      [0,1],[1,2],[2,3],[3,4],        // thumb
+      [0,5],[5,6],[6,7],[7,8],        // index
+      [0,9],[9,10],[10,11],[11,12],   // middle
+      [0,13],[13,14],[14,15],[15,16], // ring
+      [0,17],[17,18],[18,19],[19,20], // pinky
+      [5,9],[9,13],[13,17],           // palm arch
+    ];
+
+    /* ╔══════════════════════════════════════════╗
+       ║  initMediaPipe() — called from initApp() ║
+       ╚══════════════════════════════════════════╝ */
+    function initMediaPipe() {
+      // Guard: check Hands CDN loaded correctly
+      if (typeof Hands === 'undefined') {
+        console.error('[ZombAI] Hands global not found — CDN may still be loading.');
+        showToast('MediaPipe loading... retrying');
+        setTimeout(initMediaPipe, 1500);   // retry after 1.5s
+        return;
+      }
+
+      /* ── Build MediaPipe Hands instance ── */
+      mpHands = new Hands({
+        locateFile: (file) =>
+          `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+      });
+
+      mpHands.setOptions({
+        maxNumHands:            2,
+        modelComplexity:        1,
+        minDetectionConfidence: 0.7,
+        minTrackingConfidence:  0.5,
+      });
+
+      mpHands.onResults(onHandResults);
+
+      /* ── Request camera via getUserMedia (no camera_utils needed) ── */
+      const video = document.getElementById('camera-feed');
+
+      navigator.mediaDevices.getUserMedia({
+        video: { width: 640, height: 480, facingMode: 'user' },
+        audio: false
+      })
+      .then((stream) => {
+        video.srcObject = stream;
+        return video.play();
+      })
+      .then(() => {
+        document.getElementById('status-line').textContent =
+          'Camera active — raise your hand';
+        showToast('Camera ready ✓');
+        console.log('[ZombAI] Camera stream started via getUserMedia');
+        startHandTrackingLoop(video);
+      })
+      .catch((err) => {
+        console.error('[ZombAI] Camera error:', err.name, err.message);
+        document.getElementById('status-line').textContent =
+          'Camera error: ' + err.name;
+        showToast('Camera blocked — check permissions');
+      });
+    }
+
+    /* ╔══════════════════════════════════════════╗
+       ║  rAF-based hand tracking loop            ║
+       ╚══════════════════════════════════════════╝ */
+    function startHandTrackingLoop(video) {
+      let running = true;
+
+      async function loop() {
+        if (!running || !mpHands) return;
+        try {
+          // Only send when video has real pixel data
+          if (video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+            await mpHands.send({ image: video });
+          }
+        } catch (e) {
+          console.warn('[ZombAI] Hand tracking frame skipped:', e.message);
+        }
+        requestAnimationFrame(loop);
+      }
+
+      requestAnimationFrame(loop);
+      console.log('[ZombAI] Hand tracking rAF loop started');
+    }
+
+    /* ╔══════════════════════════════════════════╗
+       ║  onHandResults — fires per camera frame  ║
+       ╚══════════════════════════════════════════╝ */
+    function onHandResults(results) {
+      handData.left  = null;
+      handData.right = null;
+
+      if (results.multiHandLandmarks && results.multiHandedness) {
+        activeHandCount = results.multiHandLandmarks.length;
+        for (let i = 0; i < activeHandCount; i++) {
+          const label = results.multiHandedness[i].label.toLowerCase();
+          handData[label] = results.multiHandLandmarks[i];
+        }
+      } else {
+        activeHandCount = 0;
+      }
+
+      // HUD badges: 'right' label = visual-left → cyan, 'left' label = visual-right → magenta
+      updateHandBadges(!!handData.right, !!handData.left);
+
+      // Skeleton drawing (1C-iii)
+      if (typeof drawSkeleton === 'function') drawSkeleton(handData);
+
+      // Gesture detection (1D)
+      if (typeof processGestures === 'function') processGestures(handData);
+    }
+  </script>
+
+  <!-- ═══════════════════════════════════════════════
+       STEP 1C-iii : 2D Skeleton Drawing
+       Draws hand bones + landmark dots on #skeleton-canvas
+       Called every frame from onHandResults()
+  ═══════════════════════════════════════════════ -->
+  <script>
+    /* ── Canvas + 2D context (set up once) ───── */
+    let skelCanvas = null;
+    let skelCtx    = null;
+
+    /* Theme colours matching CSS variables */
+    const SKEL_COLOR = {
+      right: '#00f5ff',   // MediaPipe 'right' label → visual left → cyan
+      left:  '#ff00c8',   // MediaPipe 'left'  label → visual right → magenta
+    };
+
+    /* ── Init skeleton canvas pixel buffer ───── */
+    /* Called from initThree (which fires on Initialize click) */
+    function initSkeletonCanvas() {
+      skelCanvas        = document.getElementById('skeleton-canvas');
+      skelCanvas.width  = window.innerWidth;
+      skelCanvas.height = window.innerHeight;
+      skelCtx           = skelCanvas.getContext('2d');
+      console.log('[ZombAI] Skeleton canvas ready:', skelCanvas.width, 'x', skelCanvas.height);
+    }
+
+    /* ── Main draw function ─────────────────── */
+    /* Receives handData = { left: landmarks|null, right: landmarks|null } */
+    function drawSkeleton(hd) {
+      if (!skelCtx) return;
+
+      /* Clear the overlay each frame */
+      skelCtx.clearRect(0, 0, skelCanvas.width, skelCanvas.height);
+
+      /* Draw each hand that has data */
+      for (const label of ['right', 'left']) {
+        const landmarks = hd[label];
+        if (!landmarks || landmarks.length < 21) continue;
+
+        const color = SKEL_COLOR[label];
+
+        /* Helper: landmark → pixel coords (mirror X for front camera) */
+        const px = (lm) => (1 - lm.x) * skelCanvas.width;
+        const py = (lm) => lm.y * skelCanvas.height;
+
+        /* ── 1. Draw bones (connections) ── */
+        skelCtx.save();
+        skelCtx.strokeStyle   = color;
+        skelCtx.lineWidth     = 2;
+        skelCtx.globalAlpha   = 0.75;
+        skelCtx.shadowColor   = color;
+        skelCtx.shadowBlur    = 8;
+        skelCtx.lineCap       = 'round';
+
+        for (const [a, b] of HAND_CONNECTIONS) {
+          const lmA = landmarks[a];
+          const lmB = landmarks[b];
+          skelCtx.beginPath();
+          skelCtx.moveTo(px(lmA), py(lmA));
+          skelCtx.lineTo(px(lmB), py(lmB));
+          skelCtx.stroke();
+        }
+        skelCtx.restore();
+
+        /* ── 2. Draw landmark dots ── */
+        skelCtx.save();
+        skelCtx.fillStyle   = color;
+        skelCtx.shadowColor = color;
+        skelCtx.shadowBlur  = 10;
+        skelCtx.globalAlpha = 0.9;
+
+        for (let i = 0; i < 21; i++) {
+          const lm = landmarks[i];
+          const r  = (i === 0) ? 5 : 3;   // wrist dot slightly larger
+          skelCtx.beginPath();
+          skelCtx.arc(px(lm), py(lm), r, 0, Math.PI * 2);
+          skelCtx.fill();
+        }
+        skelCtx.restore();
+
+        /* ── 3. Index fingertip cursor (landmark 8) ── */
+        const tip = landmarks[8];
+        const tx  = px(tip);
+        const ty  = py(tip);
+
+        /* Outer glow ring */
+        skelCtx.save();
+        skelCtx.strokeStyle = color;
+        skelCtx.lineWidth   = 1.5;
+        skelCtx.globalAlpha = 0.5;
+        skelCtx.shadowColor = color;
+        skelCtx.shadowBlur  = 18;
+        skelCtx.beginPath();
+        skelCtx.arc(tx, ty, 14, 0, Math.PI * 2);
+        skelCtx.stroke();
+        skelCtx.restore();
+
+        /* Inner bright dot */
+        skelCtx.save();
+        skelCtx.fillStyle   = '#ffffff';
+        skelCtx.globalAlpha = 0.95;
+        skelCtx.shadowColor = color;
+        skelCtx.shadowBlur  = 20;
+        skelCtx.beginPath();
+        skelCtx.arc(tx, ty, 5, 0, Math.PI * 2);
+        skelCtx.fill();
+        skelCtx.restore();
+      }
+    }
+  </script>
+
+  <!-- ═══════════════════════════════════════════════════════
+       MODULE 1D (REVISED) — GESTURE RECOGNITION v2
+       Gestures: EXPAND · SQUEEZE · ROTATE · CLICK · DRAG · DROP
+                 RIP · FIST (explosion) · PEACE (color cycle)
+       State machine: IDLE → PINCH_START → CLICK|DRAG_ACTIVE → DROP
+  ═══════════════════════════════════════════════════════ -->
+  <script>
+
+    /* ═══════════════════════════════════════════════════
+       COLOR PRESETS (kept from v1)
+    ═══════════════════════════════════════════════════ */
+    const COLOR_PRESETS = [
+      { name: 'Neon Cyan',   c1: new THREE.Color(0x00f5ff), c2: new THREE.Color(0xff00c8) },
+      { name: 'Solar Flare', c1: new THREE.Color(0xff6600), c2: new THREE.Color(0xffcc00) },
+      { name: 'Acid Green',  c1: new THREE.Color(0x00ff88), c2: new THREE.Color(0x00ccff) },
+      { name: 'Ghost White', c1: new THREE.Color(0xffffff), c2: new THREE.Color(0xaaddff) },
+    ];
+    let currentPreset = 0;
+
+    function cycleColorPreset() {
+      currentPreset = (currentPreset + 1) % COLOR_PRESETS.length;
+      const p = COLOR_PRESETS[currentPreset];
+      UNI.uColor1.value.copy(p.c1);
+      UNI.uColor2.value.copy(p.c2);
+      showPreset(p.name);
+      showToast('Color: ' + p.name);
+    }
+
+    /* ═══════════════════════════════════════════════════
+       1D-rev-i : CORE TRACKING STATE
+    ═══════════════════════════════════════════════════ */
+
+    /* ── Gesture state machine ── */
+    const GS = {                  // GestureState
+      IDLE:         'IDLE',
+      PINCH_START:  'PINCH_START',
+      DRAG_ACTIVE:  'DRAG_ACTIVE',
+      DROP:         'DROP',
+    };
+    let gestureState  = GS.IDLE;
+
+    /* ── Frame-to-frame tracking ── */
+    let prevHandDist   = null;    // previous distance between palm centers
+    let prevHandAngle  = null;    // previous angle between palm centers (radians)
+    let handDistVel    = 0;       // velocity of distance change (for RIP detection)
+
+    /* ── Pinch timer ── */
+    let pinchStartTime  = null;   // performance.now() when pinch first detected
+    const CLICK_MAX_MS  = 200;    // pinch < 200ms → CLICK
+    const DRAG_MIN_MS   = 100;    // pinch > 100ms → DRAG
+
+    /* ── Drag state ── */
+    let dragBasePos     = null;   // {x,y} cluster position when drag started
+    let dragHandStart   = null;   // {x,y} hand position when drag started
+    let handLostTimer   = 0;      // frames since hand lost during drag
+    const HAND_LOST_TIMEOUT = 48; // ~800ms at 60fps → auto-drop
+
+    /* ── Rotation / scale ── */
+    let rotVelY   = 0.003;
+    let rotVelX   = 0.0008;
+    let scaleTarget = 1.0;
+
+    /* ── Explosion ── */
+    let expActive    = false;
+    let expStartTime = 0;
+    const EXP_DURATION = 1.2;
+
+    /* ── Cooldowns ── */
+    const COOLDOWN = { FIST: 0, PEACE: 0, RIP: 0 };
+    const COOLDOWN_FRAMES = 55;
+
+    /* ── RIP state ── */
+    /* ── RIP detection — CHARGE-WINDOW approach ─────────────────────────────
+       Per-frame velocity is unreliable (camera latency varies).
+       Instead: measure TOTAL distance change over a time window.
+
+       Mechanic:
+         1. When both hands enter frame close together (< RIP_CHARGE_DIST),
+            start a charge window with a baseline distance.
+         2. If total distance increases by ≥ RIP_PULL_CHANGE
+            within RIP_WINDOW_MS → TRIGGER RIP.
+         3. If window expires or hands come apart slowly → reset.
+
+       User intent: bring hands together → snap apart quickly.            */
+    const RIP_CHARGE_DIST  = 0.42;  // hands must start ≤ this apart to arm
+    const RIP_PULL_CHANGE  = 0.18;  // total distance increase needed to fire
+    const RIP_WINDOW_MS    = 700;   // must complete pull within 700ms
+
+    let ripChargeStart    = null;   // performance.now() when charge armed
+    let ripChargeBaseDist = null;   // distance when charge was armed
+    let ripActive         = false;
+    let ripStartTime      = 0;
+    const RIP_DURATION    = 2.2;
+
+    /* ═══════════════════════════════════════════════════
+       1D-rev-i : UTILITY FUNCTIONS
+    ═══════════════════════════════════════════════════ */
+
+    /* Palm center = landmark 0 (wrist) — good enough proxy */
+    function palmCenter(lm) {
+      return { x: lm[0].x, y: lm[0].y };
+    }
+
+    /* Distance between two {x,y} points (normalised coords) */
+    function dist2D(a, b) {
+      const dx = a.x - b.x, dy = a.y - b.y;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    /* Angle between two {x,y} points */
+    function angle2D(a, b) {
+      return Math.atan2(b.y - a.y, b.x - a.x);
+    }
+
+    /* Pinch: thumb tip (4) to index tip (8) */
+    function getPinchDist(lm) {
+      const dx = lm[4].x - lm[8].x, dy = lm[4].y - lm[8].y;
+      return Math.sqrt(dx * dx + dy * dy);
+    }
+    const PINCH_THRESHOLD   = 0.065;
+    const RELEASE_THRESHOLD = 0.10;
+
+    /* Finger extension (y increases downward in MediaPipe) */
+    function isFingerUp(lm, tip, pip) { return lm[tip].y < lm[pip].y; }
+
+    /* FIST: all four fingers curled */
+    function isFist(lm) {
+      return !isFingerUp(lm,8,6) && !isFingerUp(lm,12,10)
+          && !isFingerUp(lm,16,14) && !isFingerUp(lm,20,18);
+    }
+
+    /* PEACE: index + middle up, ring + pinky down */
+    function isPeace(lm) {
+      return isFingerUp(lm,8,6) && isFingerUp(lm,12,10)
+          && !isFingerUp(lm,16,14) && !isFingerUp(lm,20,18);
+    }
+
+    /* ═══════════════════════════════════════════════════
+       1D-rev-ii : EXPAND / SQUEEZE / ROTATE
+    ═══════════════════════════════════════════════════ */
+
+    function processTwoHandGestures(lA, lB) {
+      const cA = palmCenter(lA);
+      const cB = palmCenter(lB);
+
+      /* ── Distance tracking (EXPAND / SQUEEZE / RIP) ── */
+      const dist      = dist2D(cA, cB);
+      const distDelta = prevHandDist !== null ? dist - prevHandDist : 0;
+      handDistVel     = distDelta;
+
+      /* ── RIP charge window ─────────────────────────────────────────────
+         Step 1: ARM — when hands are close, record baseline              */
+      if (dist <= RIP_CHARGE_DIST && ripChargeStart === null
+          && COOLDOWN.RIP === 0 && !ripActive) {
+        ripChargeStart    = performance.now();
+        ripChargeBaseDist = dist;
+        console.log('[ZombAI] RIP armed — baseline dist:', dist.toFixed(3));
+      }
+
+      /* Step 2: CHECK — did total pull exceed threshold within window?   */
+      if (ripChargeStart !== null) {
+        const elapsed    = performance.now() - ripChargeStart;
+        const totalPull  = dist - ripChargeBaseDist;
+
+        if (totalPull >= RIP_PULL_CHANGE && COOLDOWN.RIP === 0 && !ripActive) {
+          /* ✓ Fast enough pull — FIRE */
+          triggerRip();
+          ripChargeStart    = null;
+          ripChargeBaseDist = null;
+          COOLDOWN.RIP      = COOLDOWN_FRAMES * 4;
+
+        } else if (elapsed > RIP_WINDOW_MS || dist > RIP_CHARGE_DIST * 2.2) {
+          /* ✗ Too slow, or hands drifted too far without snapping — DISARM */
+          ripChargeStart    = null;
+          ripChargeBaseDist = null;
+        }
+        /* Debug: show charge progress in HUD */
+        if (ripChargeStart !== null) {
+          const pct = Math.round((totalPull / RIP_PULL_CHANGE) * 100);
+          setRipProgress(Math.min(pct, 99));   // fills bar as you pull
+        }
+      } else {
+        setRipProgress(0);
+      }
+
+      /* EXPAND — gradual outward (not a snap) */
+      if (distDelta > 0.004 && distDelta < 0.025) {
+        scaleTarget = THREE.MathUtils.clamp(scaleTarget + distDelta * 1.8, 0.3, 2.5);
+        showGesture('EXPAND ↔');
+      }
+
+      /* SQUEEZE — gradual inward */
+      if (distDelta < -0.004 && distDelta > -0.025) {
+        scaleTarget = THREE.MathUtils.clamp(scaleTarget + distDelta * 1.8, 0.3, 2.5);
+        showGesture('SQUEEZE ↩');
+      }
+
+      prevHandDist = dist;
+
+      /* ── Angle tracking (ROTATE) ──
+         Only rotate when hands are NOT significantly expanding/squeezing.
+         If |distDelta| is large, that motion dominates — skip rotation.
+         This prevents EXPAND from also spinning the cluster.               */
+      const angle      = angle2D(cA, cB);
+      const angleDelta = prevHandAngle !== null ? angle - prevHandAngle : 0;
+
+      /* Wrap-around fix: keep delta in -π…π */
+      const wrappedDelta = ((angleDelta + Math.PI) % (2 * Math.PI)) - Math.PI;
+
+      /* Gate: angle change must be meaningful AND distance change must be small
+         (i.e. hands are twisting, not just moving apart/together)           */
+      const distChanging = Math.abs(distDelta) > 0.006;
+      if (Math.abs(wrappedDelta) > 0.018 && !distChanging) {
+        // Reduced multiplier 0.6→0.12 — proportional, not accumulating wildly
+        // Cap contribution per frame to avoid sudden jerks
+        const contribution = THREE.MathUtils.clamp(wrappedDelta * 0.12, -0.025, 0.025);
+        rotVelY += contribution;
+        rotVelX += THREE.MathUtils.clamp((cA.y - cB.y) * 0.008, -0.01, 0.01);
+        showGesture('ROTATE ↺');
+      }
+
+      prevHandAngle = angle;
+    }
+
+    /* ═══════════════════════════════════════════════════
+       1D-rev-iii : PINCH → CLICK / DRAG / DROP
+    ═══════════════════════════════════════════════════ */
+
+    function processSingleHandGestures(lm) {
+      const pinchDist = getPinchDist(lm);
+      const isPinched = pinchDist < PINCH_THRESHOLD;
+      const isReleased= pinchDist > RELEASE_THRESHOLD;
+      const now       = performance.now();
+
+      /* ── FIST (explosion — kept from v1) ── */
+      if (isFist(lm) && COOLDOWN.FIST === 0 && !expActive) {
+        triggerExplosion();
+        COOLDOWN.FIST = COOLDOWN_FRAMES;
+        return;
+      }
+
+      /* ── PEACE (color cycle — kept from v1) ── */
+      if (isPeace(lm) && COOLDOWN.PEACE === 0) {
+        cycleColorPreset();
+        COOLDOWN.PEACE = COOLDOWN_FRAMES;
+        return;
+      }
+
+      switch (gestureState) {
+
+        case GS.IDLE:
+          if (isPinched) {
+            gestureState  = GS.PINCH_START;
+            pinchStartTime = now;
+            triggerPinchGlow();
+          }
+          break;
+
+        case GS.PINCH_START:
+          if (isReleased) {
+            /* Released before DRAG threshold */
+            const held = now - pinchStartTime;
+            if (held < CLICK_MAX_MS) {
+              triggerClick();
+            }
+            gestureState = GS.IDLE;
+            pinchStartTime = null;
+          } else if (isPinched && (now - pinchStartTime) > DRAG_MIN_MS) {
+            /* Held long enough → start DRAG */
+            gestureState  = GS.DRAG_ACTIVE;
+            dragHandStart = palmCenter(lm);
+            dragBasePos   = {
+              x: particleSystem ? particleSystem.position.x : 0,
+              y: particleSystem ? particleSystem.position.y : 0,
+            };
+            showGesture('DRAG 🤌');
+            showToast('Drag active');
+          }
+          break;
+
+        case GS.DRAG_ACTIVE:
+          handLostTimer = 0;   // reset lost timer
+          if (isReleased) {
+            triggerDrop(lm);
+            gestureState = GS.IDLE;
+          } else {
+            /* Move cluster with hand.
+               MediaPipe x is in mirrored camera space (x increases left→right in camera,
+               but we already mirror skeleton draw with 1-x). For world movement:
+               hand moves right on screen → MediaPipe x decreases (mirrored camera)
+               → (dragHandStart.x - cur.x) is positive → world X should increase (+right).
+               So multiplier is POSITIVE 3.5, not negative.                         */
+            const cur = palmCenter(lm);
+            const dx  = (dragHandStart.x - cur.x) *  3.5;   // fixed: was -3.5
+            const dy  = (dragHandStart.y - cur.y) *  3.5;   // y: up on screen = world +Y
+            if (particleSystem) {
+              particleSystem.position.x += (dragBasePos.x + dx - particleSystem.position.x) * 0.18;
+              particleSystem.position.y += (dragBasePos.y + dy - particleSystem.position.y) * 0.18;
+            }
+
+            /* Draw energy link on skeleton canvas */
+            drawEnergyLink(cur);
+          }
+          break;
+      }
+    }
+
+    /* ── Pinch glow (PINCH_START visual feedback) ── */
+    function triggerPinchGlow() {
+      // Brief scale spike for tactile feel
+      scaleTarget = UNI.uScale.value * 1.12;
+      setTimeout(() => { scaleTarget = UNI.uScale.value / 1.12; }, 120);
+    }
+
+    /* ── CLICK feedback ── */
+    function triggerClick() {
+      showGesture('CLICK ✦');
+      showToast('Selected');
+      // Pulse: scale up then back
+      scaleTarget = UNI.uScale.value * 1.2;
+      setTimeout(() => { scaleTarget = 1.0; }, 250);
+    }
+
+    /* ── DROP: apply last hand velocity as rotation momentum ── */
+    let prevDragPos  = null;
+    function triggerDrop(lm) {
+      const cur = palmCenter(lm);
+      if (prevDragPos) {
+        rotVelY += (prevDragPos.x - cur.x) * -1.5;
+        rotVelX += (prevDragPos.y - cur.y) *  1.5;
+      }
+      // Drift cluster back toward origin
+      if (particleSystem) {
+        particleSystem.position.x *= 0.0;
+        particleSystem.position.y *= 0.0;
+      }
+      showGesture('DROP');
+      showToast('Released');
+      prevDragPos   = null;
+      dragHandStart = null;
+    }
+
+    /* ── Energy link: line from fingertip to cluster center ── */
+    function drawEnergyLink(handPos) {
+      if (!skelCtx || !skelCanvas) return;
+      const hx = (1 - handPos.x) * skelCanvas.width;
+      const hy = handPos.y * skelCanvas.height;
+      const cx = skelCanvas.width  / 2;
+      const cy = skelCanvas.height / 2;
+
+      skelCtx.save();
+      const grad = skelCtx.createLinearGradient(hx, hy, cx, cy);
+      grad.addColorStop(0, 'rgba(0,245,255,0.8)');
+      grad.addColorStop(1, 'rgba(255,0,200,0.0)');
+      skelCtx.strokeStyle   = grad;
+      skelCtx.lineWidth     = 2;
+      skelCtx.shadowColor   = '#00f5ff';
+      skelCtx.shadowBlur    = 12;
+      skelCtx.setLineDash([6, 4]);
+      skelCtx.beginPath();
+      skelCtx.moveTo(hx, hy);
+      skelCtx.lineTo(cx, cy);
+      skelCtx.stroke();
+      skelCtx.restore();
+    }
+
+    /* ═══════════════════════════════════════════════════
+       1D-rev-iv : RIP · FIST · PEACE
+    ═══════════════════════════════════════════════════ */
+
+    function triggerRip() {
+      ripActive    = true;
+      ripStartTime = clock.getElapsedTime();
+      showGesture('RIP ⚡');
+      showToast('Rip!');
+      /* speech suppressed for animation events */
+      console.log('[ZombAI] RIP triggered — velocity:', handDistVel.toFixed(4));
+    }
+
+    function triggerExplosion() {
+      expActive    = true;
+      expStartTime = clock.getElapsedTime();
+      showGesture('EXPLODE 💥');
+      showToast('Explosion!');
+      /* speech suppressed for animation events */
+    }
+
+    /* ═══════════════════════════════════════════════════
+       MAIN ENTRY — processGestures (called from onHandResults)
+    ═══════════════════════════════════════════════════ */
+    function processGestures(hd) {
+      if (birthActive) return;
+
+      /* Decrement cooldowns */
+      for (const k in COOLDOWN) if (COOLDOWN[k] > 0) COOLDOWN[k]--;
+
+      const hasLeft  = !!hd.left;
+      const hasRight = !!hd.right;
+
+      /* ── Two-hand gestures take priority ── */
+      if (hasLeft && hasRight) {
+        /* Cancel single-hand drag if second hand appears */
+        if (gestureState === GS.DRAG_ACTIVE) {
+          triggerDrop(hd.right || hd.left);
+          gestureState = GS.IDLE;
+        }
+        prevHandDist  = prevHandDist;   // keep tracking
+        processTwoHandGestures(hd.left, hd.right);
+
+        /* Also check FIST / PEACE on primary hand */
+        const primary = hd.right || hd.left;
+        if (isFist(primary)  && COOLDOWN.FIST  === 0 && !expActive) { triggerExplosion(); COOLDOWN.FIST  = COOLDOWN_FRAMES; }
+        if (isPeace(primary) && COOLDOWN.PEACE === 0) { cycleColorPreset(); COOLDOWN.PEACE = COOLDOWN_FRAMES; }
+
+      } else {
+        /* Single-hand mode — reset two-hand tracking */
+        prevHandDist  = null;
+        prevHandAngle = null;
+
+        /* Handle lost hand during drag */
+        if (gestureState === GS.DRAG_ACTIVE) {
+          handLostTimer++;
+          if (handLostTimer > HAND_LOST_TIMEOUT) {
+            gestureState  = GS.IDLE;
+            handLostTimer = 0;
+            showToast('Hand lost — dropped');
+          }
+        }
+
+        const lm = hd.right || hd.left || null;
+
+        /* ── Tray visibility: update every frame based on hand proximity ── */
+        if (typeof updateFooterTray === 'function') updateFooterTray(lm);
+
+        if (lm) {
+          handLostTimer = 0;
+          /* ── Footer zone check — runs BEFORE particle gesture state machine ── */
+          if (typeof isInFooterZone === 'function' && isInFooterZone(lm)) {
+            /* Clean up drag state if hand drifts into footer while dragging */
+            if (gestureState === GS.DRAG_ACTIVE) {
+              triggerDrop(lm);
+              gestureState = GS.IDLE;
+            }
+            if (typeof processFooterGesture === 'function') processFooterGesture(lm);
+            if (typeof clearSwipeBuffer === 'function') clearSwipeBuffer();
+          } else {
+            if (typeof clearFooterHover === 'function') clearFooterHover();
+            processSingleHandGestures(lm);
+            /* Swipe: only track when IDLE and hand is open (not pinching) */
+            if (gestureState === GS.IDLE && typeof trackSwipe === 'function') {
+              const pd = typeof getPinchDist === 'function' ? getPinchDist(lm) : 1;
+              if (pd > PINCH_THRESHOLD) trackSwipe(lm);
+              else if (typeof clearSwipeBuffer === 'function') clearSwipeBuffer();
+            }
+          }
+        }
+      }
+    }
+
+    /* ═══════════════════════════════════════════════════
+       updateGestureAnimations — called every frame from animate()
+    ═══════════════════════════════════════════════════ */
+    function updateGestureAnimations() {
+      /* Run carousel if active (swipe animation — suppresses scale lerp + position lerp) */
+      if (typeof runCarousel === 'function' && typeof carouselActive !== 'undefined' && carouselActive) {
+        runCarousel();
+      } else {
+        /* Normal scale lerp — disabled during carousel so carousel owns scale */
+        UNI.uScale.value += (scaleTarget - UNI.uScale.value) * 0.07;
+      }
+
+      /* Explosion bell curve */
+      if (expActive) {
+        const p = Math.min((clock.getElapsedTime() - expStartTime) / EXP_DURATION, 1.0);
+        UNI.uExpT.value = Math.sin(p * Math.PI);
+        if (p >= 1.0) { expActive = false; UNI.uExpT.value = 0.0; }
+      }
+
+      /* RIP: ramp uRipX up then auto-reform */
+      if (ripActive) {
+        const p = Math.min((clock.getElapsedTime() - ripStartTime) / RIP_DURATION, 1.0);
+        if (p < 0.4) {
+          UNI.uRipX.value = THREE.MathUtils.lerp(0, 1.6, p / 0.4);
+        } else {
+          // Reform
+          UNI.uRipX.value = THREE.MathUtils.lerp(1.6, 0, (p - 0.4) / 0.6);
+          setReformProgress(Math.round(((p - 0.4) / 0.6) * 100));
+        }
+        if (p >= 1.0) {
+          ripActive       = false;
+          UNI.uRipX.value = 0.0;
+          setReformProgress(0);
+        }
+      }
+
+      /* Rotation velocity — decay + idle floor */
+      rotVelY *= 0.97;
+      rotVelX *= 0.97;
+      rotVelY = THREE.MathUtils.clamp(rotVelY, -0.025, 0.025);  // tighter cap
+      rotVelX = THREE.MathUtils.clamp(rotVelX, -0.015, 0.015);
+      if (Math.abs(rotVelY) < 0.003) rotVelY = 0.003;  // idle floor
+
+      if (particleSystem) {
+        particleSystem.rotation.y += rotVelY;
+        particleSystem.rotation.x += rotVelX;
+        /* Position lerp back to origin — suppressed during carousel (carousel owns position) */
+        var _carActive = (typeof carouselActive !== 'undefined') && carouselActive;
+        if (!_carActive && gestureState !== GS.DRAG_ACTIVE) {
+          particleSystem.position.x += (0 - particleSystem.position.x) * 0.06;
+          particleSystem.position.y += (0 - particleSystem.position.y) * 0.06;
+        }
+      }
+    }
+  </script>
+
+  <!-- ═══════════════════════════════════════════════════════
+       MODULE 1D-FOOTER — GESTURE TAP ON SHAPE BUTTONS
+       • Footer zone = bottom 18% of screen height
+       • Zone check runs in processGestures dispatcher (no monkey-patch)
+       • Pinch in footer zone → morphToShape(), button highlight
+       • Visual: column glow + pulsing ring on skeleton canvas
+  ═══════════════════════════════════════════════════════ -->
+  <script>
+
+    /* ── Footer zone definition ──────────────────────────
+       "Footer zone" = bottom FOOTER_ZONE_PCT of screen height.
+       When the PRIMARY hand's index fingertip (lm 8) y-coord
+       (in normalised 0–1 MediaPipe space) is within this zone,
+       all particle gestures are suppressed and tap logic runs.   */
+    const FOOTER_ZONE_PCT  = 0.18;  // bottom 18% of screen
+    const SHAPES_ORDER     = ['sphere','circle','cube','cuboid','square','rectangle','line'];
+    const NUM_BUTTONS      = SHAPES_ORDER.length;
+
+    /* State */
+    let footerHoverIdx    = -1;     // which button index fingertip is over (-1 = none)
+    let footerPinchArmed  = false;  // true once pinch detected in footer zone
+    let footerPinchFired  = false;  // prevent repeat-fire while held
+
+    /* Cache button DOM refs once */
+    let _btnEls = null;
+    function getBtnEls() {
+      if (!_btnEls) _btnEls = Array.from(document.querySelectorAll('.shape-btn'));
+      return _btnEls;
+    }
+
+    /* ── isInFooterZone ──────────────────────────────────
+       Returns true if the index fingertip is in footer zone.
+       MediaPipe y: 0=top, 1=bottom. Mirror x with (1-x).      */
+    function isInFooterZone(lm) {
+      /* Use actual footer element top position — accurate regardless of screen size */
+      const footer = document.getElementById('footer');
+      if (!footer) return lm[8].y >= (1 - FOOTER_ZONE_PCT); // fallback
+      const footerTop = footer.getBoundingClientRect().top;
+      const screenY   = lm[8].y * window.innerHeight;
+      return screenY >= footerTop;
+    }
+
+    /* ── fingertipToButtonIdx ────────────────────────────
+       Map mirrored x of index fingertip → button index 0–6.
+       Buttons are evenly distributed across screen width.      */
+    function fingertipToButtonIdx(lm) {
+      /* Map fingertip screen X to whichever button's bounding rect contains it.
+         Uses actual DOM positions — accurate for any button spacing / size.
+         Returns -1 if not over any button.                                     */
+      const btns    = getBtnEls();
+      const screenX = (1 - lm[8].x) * window.innerWidth;   // mirrored
+      for (let i = 0; i < btns.length; i++) {
+        const r = btns[i].getBoundingClientRect();
+        if (screenX >= r.left && screenX <= r.right) return i;
+      }
+      /* Not directly over a button — find nearest one */
+      let nearest = 0, nearestDist = Infinity;
+      for (let i = 0; i < btns.length; i++) {
+        const r    = btns[i].getBoundingClientRect();
+        const mid  = (r.left + r.right) / 2;
+        const dist = Math.abs(screenX - mid);
+        if (dist < nearestDist) { nearestDist = dist; nearest = i; }
+      }
+      return nearest;
+    }
+
+    /* ── processFooterGesture ────────────────────────────
+       Called from processSingleHandGestures when in footer zone.
+       Handles hover highlight + tap-to-morph.                  */
+    const FOOTER_PINCH_THRESHOLD = 0.038;  // tighter than particle PINCH — deliberate tap only
+
+    function processFooterGesture(lm) {
+      const idx      = fingertipToButtonIdx(lm);
+      if (idx < 0) return;   // not near any button
+      const btns     = getBtnEls();
+      const pinchNow = getPinchDist(lm) < FOOTER_PINCH_THRESHOLD;  // tighter threshold
+
+      /* ── Update hover highlight ── */
+      if (idx !== footerHoverIdx) {
+        /* Clear old hover */
+        if (footerHoverIdx >= 0) btns[footerHoverIdx].classList.remove('gesture-hover');
+        footerHoverIdx = idx;
+        btns[idx].classList.add('gesture-hover');
+        /* Reset pinch gate when moving to new button */
+        footerPinchArmed = false;
+        footerPinchFired = false;
+      }
+
+      /* ── Draw fingertip targeting ring on skeleton canvas ── */
+      drawFooterCursor(lm, idx);
+
+      /* ── Tap detection: pinch → fire once per press ──
+         Simple: pinch detected = trigger. footerPinchFired
+         prevents re-firing while pinch is held.              */
+      if (pinchNow && !footerPinchFired) {
+        const shape = SHAPES_ORDER[idx];
+        morphToShape(shape);
+        btns.forEach(b => b.classList.remove('active'));
+        btns[idx].classList.add('active');
+        showToast('Shape: ' + shape.toUpperCase());
+        footerPinchFired = true;
+      }
+      if (!pinchNow) {
+        footerPinchFired = false;   // reset when released
+      }
+    }
+
+    /* ── clearFooterHover ────────────────────────────────
+       Called when hand exits footer zone.                     */
+    function clearFooterHover() {
+      const btns = getBtnEls();
+      if (footerHoverIdx >= 0) {
+        btns[footerHoverIdx].classList.remove('gesture-hover');
+        footerHoverIdx = -1;
+      }
+      footerPinchArmed = false;
+      footerPinchFired = false;
+    }
+
+    /* ── drawFooterCursor ────────────────────────────────
+       Draws a pulsing ring around the fingertip + a column
+       highlight showing which button is targeted.            */
+    function drawFooterCursor(lm, idx) {
+      if (!skelCtx || !skelCanvas) return;
+      /* Suppress cursor when tray is hidden */
+      if (typeof footerTrayVisible !== 'undefined' && !footerTrayVisible) return;
+      /* Column rectangle removed — caused visual clutter.
+         Only draw: pulsing ring around fingertip + inner dot. */
+      const tip = lm[8];
+      const tx  = (1 - tip.x) * skelCanvas.width;
+      const ty  = tip.y       * skelCanvas.height;
+
+      /* Pulsing ring — size shows pinch readiness */
+      const pinchDist = getPinchDist(lm);
+      const pinchPct  = 1 - Math.min(pinchDist / FOOTER_PINCH_THRESHOLD, 1); // 0=open, 1=pinched
+      const pulse     = 0.5 + 0.5 * Math.sin(performance.now() / 180);
+      const ring      = 18 - pinchPct * 8 + pulse * 4; // shrinks as pinch tightens
+
+      skelCtx.save();
+      skelCtx.strokeStyle = pinchPct > 0.7 ? '#ff00c8' : '#00f5ff'; // cyan→magenta as pinch closes
+      skelCtx.lineWidth   = 2.5;
+      skelCtx.globalAlpha = 0.75 + pulse * 0.25;
+      skelCtx.shadowColor = skelCtx.strokeStyle;
+      skelCtx.shadowBlur  = 16;
+      skelCtx.beginPath();
+      skelCtx.arc(tx, ty, ring, 0, Math.PI * 2);
+      skelCtx.stroke();
+      skelCtx.restore();
+
+      /* Bright centre dot */
+      skelCtx.save();
+      skelCtx.fillStyle   = '#ffffff';
+      skelCtx.globalAlpha = 0.95;
+      skelCtx.shadowColor = '#00f5ff';
+      skelCtx.shadowBlur  = 14;
+      skelCtx.beginPath();
+      skelCtx.arc(tx, ty, 4, 0, Math.PI * 2);
+      skelCtx.fill();
+      skelCtx.restore();
+    }
+
+    /* Footer zone check is in processGestures dispatcher — no monkey-patch needed */
+
+  </script>
+
+  <!-- ═══════════════════════════════════════════════════════
+       SWIPE GESTURES — LEFT & RIGHT
+       All code inside functions — nothing runs on script load.
+       initSwipe() called from initApp() after Three.js is ready.
+  ═══════════════════════════════════════════════════════ -->
+  <script>
+
+    /* ── State (module-level vars, no immediate side-effects) ── */
+    var swipeCooldown    = 0;
+    var swipeBuffer      = [];
+    var currentShapeIdx  = 0;
+
+    var SWIPE_WINDOW_MS   = 300;
+    var SWIPE_MIN_DIST    = 0.22;
+    var SWIPE_DIRECTIONAL = 1.8;
+    var SWIPE_COOLDOWN_FR = 40;
+    var SHAPES_ORDER_SW   = ['sphere','circle','cube','cuboid','square','rectangle','line'];
+
+    /* ── initSwipe — wires button sync. Called from initApp(). ── */
+    function initSwipe() {
+      document.querySelectorAll('.shape-btn').forEach(function(btn, i) {
+        btn.addEventListener('click', function() { currentShapeIdx = i; });
+      });
+      console.log('[ZombAI] Swipe module ready');
+    }
+
+    /* ── trackSwipe — called from processGestures each frame ── */
+    function trackSwipe(lm) {
+      if (!lm || swipeCooldown > 0) { swipeCooldown = Math.max(0, swipeCooldown - 1); return; }
+      swipeCooldown = Math.max(0, swipeCooldown - 1);
+
+      var wrist = lm[0];
+      var now   = performance.now();
+      var mx    = 1 - wrist.x;
+      var my    = wrist.y;
+
+      swipeBuffer.push({ mx: mx, my: my, t: now });
+      swipeBuffer = swipeBuffer.filter(function(e) { return now - e.t <= SWIPE_WINDOW_MS; });
+
+      if (swipeBuffer.length < 2) return;
+      var first = swipeBuffer[0];
+      var last  = swipeBuffer[swipeBuffer.length - 1];
+      if (last.t - first.t < 80) return;
+
+      var dX = last.mx - first.mx;
+      var dY = last.my - first.my;
+
+      if (Math.abs(dX) < SWIPE_MIN_DIST) return;
+      if (Math.abs(dX) < Math.abs(dY) * SWIPE_DIRECTIONAL) return;
+
+      /* Direction: dX > 0 = hand moves right on screen → SWIPE RIGHT → next shape
+                   dX < 0 = hand moves left on screen  → SWIPE LEFT  → previous shape */
+      if (dX > 0) {
+        currentShapeIdx = (currentShapeIdx + 1) % SHAPES_ORDER_SW.length;
+        applySwipeShape('RIGHT');
+      } else {
+        currentShapeIdx = (currentShapeIdx - 1 + SHAPES_ORDER_SW.length) % SHAPES_ORDER_SW.length;
+        applySwipeShape('LEFT');
+      }
+
+      swipeCooldown = SWIPE_COOLDOWN_FR;
+      swipeBuffer   = [];
+    }
+
+    /* ── Carousel animation state (swipe only) ─────────────────
+       Phase 0: cluster slides OUT in swipe direction + shrinks
+       Phase 1: cluster slides IN from opposite side + grows
+       morphToShape() is called between phase 0 and phase 1.    */
+    var carouselActive    = false;
+    var carouselPhase     = 0;       // 0 = slide out, 1 = slide in
+    var carouselDir       = 1;       // +1 = right, -1 = left
+    var carouselShape     = '';
+    var carouselT0        = 0;       // performance.now() at phase start
+    var CAROUSEL_OUT_MS   = 280;     // slide-out duration ms
+    var CAROUSEL_IN_MS    = 380;     // slide-in duration ms
+    var CAROUSEL_OFFSET   = 1.5;     // world-unit slide distance
+
+    /* ── applySwipeShape — triggers carousel, NOT direct morph ── */
+    function applySwipeShape(dir) {
+      carouselShape  = SHAPES_ORDER_SW[currentShapeIdx];
+      carouselDir    = (dir === 'RIGHT') ? 1 : -1;
+      carouselPhase  = 0;
+      carouselActive = true;
+      carouselT0     = performance.now();
+
+      /* Update footer button immediately so it feels responsive */
+      var btns = document.querySelectorAll('.shape-btn');
+      btns.forEach(function(b) { b.classList.remove('active'); });
+      if (btns[currentShapeIdx]) btns[currentShapeIdx].classList.add('active');
+
+      if (typeof showGesture === 'function') showGesture(dir === 'LEFT' ? '← SWIPE LEFT' : 'SWIPE RIGHT →');
+      if (typeof showToast   === 'function') showToast((dir === 'LEFT' ? '← ' : '→ ') + carouselShape.toUpperCase());
+      console.log('[ZombAI] Carousel start', dir, '→', carouselShape);
+    }
+
+    /* ── runCarousel — called every frame from updateGestureAnimations ── */
+    function runCarousel() {
+      if (!carouselActive) return;
+      var ps = (typeof particleSystem !== 'undefined') ? particleSystem : null;
+      if (!ps) return;
+
+      var elapsed = performance.now() - carouselT0;
+
+      if (carouselPhase === 0) {
+        /* Phase 0: Slide OUT in swipe direction + shrink to 55% */
+        var p     = Math.min(elapsed / CAROUSEL_OUT_MS, 1.0);
+        var eased = p * p;   // ease-in quad
+        ps.position.x = carouselDir * eased * CAROUSEL_OFFSET;
+        if (typeof UNI !== 'undefined') UNI.uScale.value = 1.0 - eased * 0.45;
+
+        if (p >= 1.0) {
+          /* ── Phase boundary: swap shape instantly, no morph tween ──
+             Call morphToShape() to set new target positions, then
+             immediately skip the tween by setting uMorphT = 1.0.
+             This avoids the "blast/formation" animation during swipe —
+             shape just snaps to its final form before sliding in.     */
+          if (typeof morphToShape === 'function') morphToShape(carouselShape);
+          if (typeof UNI !== 'undefined') {
+            UNI.uMorphT.value = 1.0;   // skip morph tween — shape appears instantly
+          }
+          if (typeof morphActive !== 'undefined') morphActive = false;
+
+          ps.position.x = -carouselDir * CAROUSEL_OFFSET;   // snap to entry side
+          if (typeof UNI !== 'undefined') UNI.uScale.value = 0.55;
+          carouselPhase = 1;
+          carouselT0    = performance.now();
+        }
+
+      } else {
+        /* Phase 1: Slide IN from opposite side + grow to 50% scale */
+        var p     = Math.min(elapsed / CAROUSEL_IN_MS, 1.0);
+        var eased = 1 - Math.pow(1 - p, 3);   // ease-out cubic
+        ps.position.x = -carouselDir * CAROUSEL_OFFSET * (1 - eased);
+        /* Grows from 55% → 50% (arrives smaller — user can expand via gesture) */
+        if (typeof UNI !== 'undefined') UNI.uScale.value = 0.55 - eased * 0.05;
+
+        if (p >= 1.0) {
+          ps.position.x = 0;
+          if (typeof UNI !== 'undefined') UNI.uScale.value = 0.50;
+          if (typeof scaleTarget !== 'undefined') scaleTarget = 0.50;
+          carouselActive = false;
+          console.log('[ZombAI] Carousel complete — resting at 50% scale');
+        }
+      }
+    }
+
+    /* ── clearSwipeBuffer ── */
+    function clearSwipeBuffer() { swipeBuffer = []; }
+
+  </script>
+
+  <!-- ═══════════════════════════════════════════════════════
+       AUTO-HIDE FOOTER TRAY
+       Hand approaches bottom → dwell 300ms → tray slides up
+       Hand moves away → 1s delay → tray slides down
+       Initial grace: visible for 3s then auto-hides
+  ═══════════════════════════════════════════════════════ -->
+  <script>
+
+    /* ── State ── */
+    var footerTrayVisible   = true;   // tracks current tray state
+    var footerApproachTimer = 0;      // frames hand has been in approach zone
+    var footerAwayTimer     = 0;      // frames hand has been outside approach zone
+    var trayInitGrace       = true;   // 3s startup grace — tray stays visible
+
+    var TRAY_APPROACH_Y     = 0.70;   // MediaPipe y > 0.70 = bottom 30% of screen
+    var TRAY_REVEAL_FRAMES  = 18;     // ~300ms dwell before revealing
+    var TRAY_HIDE_FRAMES    = 60;     // ~1s away before hiding
+
+    /* ── showFooterTray / hideFooterTray ── */
+    function showFooterTray() {
+      if (footerTrayVisible) return;
+      var footer = document.getElementById('footer');
+      if (footer) footer.classList.remove('tray-hidden');
+      footerTrayVisible   = true;
+      footerApproachTimer = 0;
+      console.log('[ZombAI] Tray revealed');
+    }
+
+    function hideFooterTray() {
+      if (!footerTrayVisible) return;
+      var footer = document.getElementById('footer');
+      if (footer) footer.classList.add('tray-hidden');
+      footerTrayVisible = false;
+      footerAwayTimer   = 0;
+      /* Clear any hover when tray hides */
+      if (typeof clearFooterHover === 'function') clearFooterHover();
+      console.log('[ZombAI] Tray hidden');
+    }
+
+    /* ── updateFooterTray — called every frame from processGestures ──
+       lm = landmark array of primary hand, or null if no hand detected */
+    function updateFooterTray(lm) {
+      /* During startup grace period, keep tray visible */
+      if (trayInitGrace) return;
+
+      var inApproachZone = false;
+
+      if (lm) {
+        /* Check if fingertip (lm[8]) OR wrist (lm[0]) is in approach zone */
+        var tipY   = lm[8].y;
+        var wristY = lm[0].y;
+        inApproachZone = (tipY > TRAY_APPROACH_Y || wristY > TRAY_APPROACH_Y);
+      }
+
+      if (inApproachZone) {
+        footerAwayTimer = 0;   // reset hide timer
+        if (!footerTrayVisible) {
+          footerApproachTimer++;
+          if (footerApproachTimer >= TRAY_REVEAL_FRAMES) showFooterTray();
+        } else {
+          footerApproachTimer = 0;  // already visible — no need to count
+        }
+      } else {
+        footerApproachTimer = 0;   // reset reveal timer
+        if (footerTrayVisible) {
+          footerAwayTimer++;
+          if (footerAwayTimer >= TRAY_HIDE_FRAMES) hideFooterTray();
+        }
+      }
+    }
+
+    /* ── Init: start 3s grace timer from initApp ── */
+    function initTray() {
+      trayInitGrace = true;
+      setTimeout(function() {
+        trayInitGrace = false;
+        /* Auto-hide if no hand near bottom at grace end */
+        hideFooterTray();
+        console.log('[ZombAI] Tray grace ended — auto-hide active');
+      }, 3000);
+    }
+
+  </script>
+
+  <!-- ═══════════════════════════════════════════════════════
+       MODULE 1E — VOICE SYSTEM
+       Part A: Speech Synthesis  — ZombAI speaks on major events
+       Part B: Speech Recognition — continuous command listening
+       Major events: shape change · explosion · rip · startup
+  ═══════════════════════════════════════════════════════ -->
+  <script>
+
+    /* ╔══════════════════════════════════════════╗
+       ║  1E-i : SPEECH SYNTHESIS                 ║
+       ╚══════════════════════════════════════════╝ */
+    var voiceSynthSupported = ('speechSynthesis' in window);
+    var voiceRecSupported   = ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
+    var zombaiRecognition   = null;
+    var recognitionRunning  = false;
+
+    /* zombaiSpeak — speak text in ZombAI's low robotic voice */
+    function zombaiSpeak(text) {
+      if (!voiceSynthSupported) return;
+      window.speechSynthesis.cancel();   // cut off any current speech
+      var utter       = new SpeechSynthesisUtterance(text);
+      utter.pitch     = 1.0;
+      utter.rate      = 1.0;
+      utter.volume    = 1.0;
+      /* Apply selected or auto-picked voice */
+      var activeVoice = (typeof _getActiveVoice === 'function') ? _getActiveVoice() : null;
+      if (activeVoice) utter.voice = activeVoice;
+      window.speechSynthesis.speak(utter);
+    }
+
+    /* ╔══════════════════════════════════════════╗
+       ║  1E-ii : SPEECH RECOGNITION              ║
+       ╚══════════════════════════════════════════╝ */
+
+    /* Shape command lookup */
+    /* ── Shape commands ─────────────────────────────────────── */
+    var VOICE_SHAPES = {
+      'sphere':    'sphere',    'ball':      'sphere',     'globe': 'sphere',
+      'circle':    'circle',    'disc':      'circle',     'disk':  'circle',   'ring': 'circle',
+      'cube':      'cube',      'box':       'cube',       'block': 'cube',
+      'cuboid':    'cuboid',    'brick':     'cuboid',     'slab':  'cuboid',
+      'square':    'square',    'flat':      'square',     'plane': 'square',
+      'rectangle': 'rectangle', 'rect':      'rectangle',  'oblong':'rectangle',
+      'line':      'line',      'stick':     'line',       'rod':   'line',     'bar': 'line',
+    };
+
+    /* ── Color preset commands ───────────────────────────────
+       Value = preset index (0–3) or -1 = cycle to next        */
+    var VOICE_COLORS = {
+      /* Preset 0 — Neon Cyan */
+      'neon':    0, 'cyan':    0, 'teal':    0, 'aqua':  0,
+      /* Preset 1 — Solar Flare */
+      'fire':    1, 'solar':   1, 'flare':   1, 'orange':1, 'red':   1, 'hot': 1,
+      /* Preset 2 — Acid Green */
+      'green':   2, 'acid':    2, 'lime':    2, 'matrix':2, 'emerald':2,
+      /* Preset 3 — Ghost White */
+      'white':   3, 'ghost':   3, 'clean':   3, 'pure':  3, 'ice':   3,
+      /* Cycle */
+      'color':  -1, 'colour': -1, 'change': -1, 'next-color': -1,
+    };
+
+    /* ── setVoicePreset — set a specific preset by index ──── */
+    function setVoicePreset(idx) {
+      if (typeof COLOR_PRESETS === 'undefined') return;
+      if (idx < 0) {
+        if (typeof cycleColorPreset === 'function') cycleColorPreset();
+        return;
+      }
+      var p = COLOR_PRESETS[idx];
+      if (!p) return;
+      if (typeof currentPreset !== 'undefined') currentPreset = idx;
+      if (typeof UNI !== 'undefined') {
+        UNI.uColor1.value.copy(p.c1);
+        UNI.uColor2.value.copy(p.c2);
+      }
+      if (typeof showPreset  === 'function') showPreset(p.name);
+      if (typeof showToast   === 'function') showToast('Color: ' + p.name);
+    }
+
+    /* ── Effect commands ────────────────────────────────────── */
+    var VOICE_EFFECTS = {
+      /* Explosion */
+      'explode':   function() { if (typeof triggerExplosion === 'function') triggerExplosion(); },
+      'explosion': function() { if (typeof triggerExplosion === 'function') triggerExplosion(); },
+      'boom':      function() { if (typeof triggerExplosion === 'function') triggerExplosion(); },
+      'blast':     function() { if (typeof triggerExplosion === 'function') triggerExplosion(); },
+      'burst':     function() { if (typeof triggerExplosion === 'function') triggerExplosion(); },
+      /* Rip */
+      'rip':       function() { if (typeof triggerRip === 'function') triggerRip(); },
+      'split':     function() { if (typeof triggerRip === 'function') triggerRip(); },
+      'tear':      function() { if (typeof triggerRip === 'function') triggerRip(); },
+      'break':     function() { if (typeof triggerRip === 'function') triggerRip(); },
+      'divide':    function() { if (typeof triggerRip === 'function') triggerRip(); },
+      /* Scale up */
+      'expand':    function() { if (typeof scaleTarget !== 'undefined') scaleTarget = 1.5; },
+      'bigger':    function() { if (typeof scaleTarget !== 'undefined') scaleTarget = 1.5; },
+      'grow':      function() { if (typeof scaleTarget !== 'undefined') scaleTarget = 1.5; },
+      'large':     function() { if (typeof scaleTarget !== 'undefined') scaleTarget = 1.5; },
+      'big':       function() { if (typeof scaleTarget !== 'undefined') scaleTarget = 1.5; },
+      /* Scale down */
+      'shrink':    function() { if (typeof scaleTarget !== 'undefined') scaleTarget = 0.5; },
+      'smaller':   function() { if (typeof scaleTarget !== 'undefined') scaleTarget = 0.5; },
+      'squeeze':   function() { if (typeof scaleTarget !== 'undefined') scaleTarget = 0.5; },
+      'small':     function() { if (typeof scaleTarget !== 'undefined') scaleTarget = 0.5; },
+      'tiny':      function() { if (typeof scaleTarget !== 'undefined') scaleTarget = 0.3; },
+      /* Reset */
+      'reset':     function() {
+        if (typeof scaleTarget !== 'undefined') scaleTarget = 1.0;
+        if (typeof particleSystem !== 'undefined' && particleSystem) {
+          particleSystem.position.x = 0;
+          particleSystem.position.y = 0;
+        }
+      },
+      'normal':    function() { if (typeof scaleTarget !== 'undefined') scaleTarget = 1.0; },
+      'default':   function() { if (typeof scaleTarget !== 'undefined') scaleTarget = 1.0; },
+      'restore':   function() { if (typeof scaleTarget !== 'undefined') scaleTarget = 1.0; },
+      /* Navigation */
+      'next':      function() {
+        if (typeof currentShapeIdx !== 'undefined' && typeof SHAPES_ORDER_SW !== 'undefined') {
+          currentShapeIdx = (currentShapeIdx + 1) % SHAPES_ORDER_SW.length;
+          if (typeof applySwipeShape === 'function') applySwipeShape('RIGHT');
+        }
+      },
+      'forward':   function() {
+        if (typeof currentShapeIdx !== 'undefined' && typeof SHAPES_ORDER_SW !== 'undefined') {
+          currentShapeIdx = (currentShapeIdx + 1) % SHAPES_ORDER_SW.length;
+          if (typeof applySwipeShape === 'function') applySwipeShape('RIGHT');
+        }
+      },
+      'previous':  function() {
+        if (typeof currentShapeIdx !== 'undefined' && typeof SHAPES_ORDER_SW !== 'undefined') {
+          currentShapeIdx = (currentShapeIdx - 1 + SHAPES_ORDER_SW.length) % SHAPES_ORDER_SW.length;
+          if (typeof applySwipeShape === 'function') applySwipeShape('LEFT');
+        }
+      },
+      'back':      function() {
+        if (typeof currentShapeIdx !== 'undefined' && typeof SHAPES_ORDER_SW !== 'undefined') {
+          currentShapeIdx = (currentShapeIdx - 1 + SHAPES_ORDER_SW.length) % SHAPES_ORDER_SW.length;
+          if (typeof applySwipeShape === 'function') applySwipeShape('LEFT');
+        }
+      },
+      'prev':      function() {
+        if (typeof currentShapeIdx !== 'undefined' && typeof SHAPES_ORDER_SW !== 'undefined') {
+          currentShapeIdx = (currentShapeIdx - 1 + SHAPES_ORDER_SW.length) % SHAPES_ORDER_SW.length;
+          if (typeof applySwipeShape === 'function') applySwipeShape('LEFT');
+        }
+      },
+    };
+
+    /* ── parseVoiceCommand — word-by-word scan of transcript ─
+       Priority: Shape → Color → Effect → (no match = AI fallback in 1E-iv) */
+    function parseVoiceCommand(transcript) {
+      var words = transcript.toLowerCase().trim().split(/\s+/);
+
+      for (var i = 0; i < words.length; i++) {
+        var word = words[i];
+
+        /* 1. Shape command */
+        if (VOICE_SHAPES[word]) {
+          var shape = VOICE_SHAPES[word];
+          if (typeof morphToShape === 'function') {
+            morphToShape(shape);
+            var btns = document.querySelectorAll('.shape-btn');
+            btns.forEach(function(b) { b.classList.remove('active'); });
+            var sidx = (typeof SHAPES_ORDER_SW !== 'undefined')
+              ? SHAPES_ORDER_SW.indexOf(shape) : -1;
+            if (sidx >= 0 && btns[sidx]) btns[sidx].classList.add('active');
+            if (typeof currentShapeIdx !== 'undefined') currentShapeIdx = sidx >= 0 ? sidx : currentShapeIdx;
+          }
+          if (typeof showToast === 'function') showToast('Voice: ' + shape.toUpperCase());
+          console.log('[ZombAI] Voice shape:', shape);
+          return true;   // matched
+        }
+
+        /* 2. Color command */
+        if (typeof VOICE_COLORS[word] !== 'undefined') {
+          setVoicePreset(VOICE_COLORS[word]);
+          console.log('[ZombAI] Voice color:', word, '→ preset', VOICE_COLORS[word]);
+          return true;   // matched
+        }
+
+        /* 3. Effect command */
+        if (VOICE_EFFECTS[word]) {
+          VOICE_EFFECTS[word]();
+          if (typeof showToast === 'function') showToast('Voice: ' + word.toUpperCase());
+          console.log('[ZombAI] Voice effect:', word);
+          return true;   // matched
+        }
+      }
+
+      return false;   // no match found — caller can route to AI
+    }
+
+    /* startRecognition — starts/restarts the recognition loop */
+    function startRecognition() {
+      if (!voiceRecSupported || !zombaiRecognition) return;
+      try {
+        zombaiRecognition.start();
+      } catch(e) {
+        /* Already running — ignore */
+      }
+    }
+
+    /* ╔══════════════════════════════════════════╗
+       ║  1E-iii : INIT                           ║
+       ╚══════════════════════════════════════════╝ */
+    function initVoice() {
+      /* ── Part A: Startup greeting ── */
+      setTimeout(function() {
+        zombaiSpeak('Welcome to ZombAI Hub. Start with Voice or Gestures.');
+      }, 800);
+
+      if (!voiceRecSupported) {
+        console.warn('[ZombAI] SpeechRecognition not supported in this browser.');
+        if (typeof setVoiceStatus === 'function') setVoiceStatus(false);
+        return;
+      }
+
+      /* ── Part B: Set up continuous recognition ── */
+      var SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+      zombaiRecognition              = new SpeechRec();
+      zombaiRecognition.continuous   = true;
+      zombaiRecognition.interimResults= false;
+      zombaiRecognition.lang         = 'en-US';
+      zombaiRecognition.maxAlternatives = 1;
+
+      /* Result handler */
+      zombaiRecognition.onresult = function(e) {
+        var transcript = e.results[e.results.length - 1][0].transcript;
+        console.log('[ZombAI] Voice heard:', transcript);
+        /* S4-i: if no command matched, route to AI */
+        var matched = parseVoiceCommand(transcript);
+        if (!matched) {
+          if (typeof routeToAI === 'function') routeToAI(transcript);
+        }
+      };
+
+      /* Auto-restart on end (keeps it always listening) */
+      zombaiRecognition.onend = function() {
+        recognitionRunning = false;
+        if (typeof setVoiceStatus === 'function') setVoiceStatus(false);
+        /* Restart after short delay */
+        setTimeout(startRecognition, 400);
+      };
+
+      /* Error handler */
+      zombaiRecognition.onerror = function(e) {
+        console.warn('[ZombAI] Voice recognition error:', e.error);
+        recognitionRunning = false;
+        if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+          if (typeof setVoiceStatus === 'function') setVoiceStatus(false);
+          console.warn('[ZombAI] Microphone permission denied — voice disabled.');
+          return;   // don't restart if permission denied
+        }
+      };
+
+      /* Start handler */
+      zombaiRecognition.onstart = function() {
+        recognitionRunning = true;
+        if (typeof setVoiceStatus === 'function') setVoiceStatus(true);
+        console.log('[ZombAI] Voice recognition listening');
+      };
+
+      /* Kick it off */
+      startRecognition();
+    }
+
+  </script>
+
+  <!-- ═══════════════════════════════════════════════════════
+       S3 — SETTINGS MODAL JAVASCRIPT
+       Mode switch · field show/hide · validate · save/load config
+  ═══════════════════════════════════════════════════════ -->
+  <script>
+
+    /* ── In-memory config store ─────────────────────────────
+       Populated by saveSettings(), read by AI layer (S4).    */
+    var zombaiConfig = {
+      mode:          'cloud',    // 'cloud' | 'local'
+      anthropicKey:  '',
+      localEndpoint: 'http://localhost:11434/v1',
+      localModel:    'qwen2.5:32b',
+      selectedVoice: null,       // SpeechSynthesisVoice | null = auto
+      ready:         false,
+    };
+
+    /* ── Auto-select best English voice ───────────────────────
+       Called on init and whenever voices load.
+       Preference order: Samantha > Google US English >
+       any en-US non-espeak > any en non-espeak > voices[0]    */
+    var _resolvedVoice = null;   // cached resolved voice object
+
+    function _pickBestVoice() {
+      var voices = window.speechSynthesis.getVoices();
+      if (!voices || voices.length === 0) return null;
+
+      var preferred = [
+        'Samantha', 'Google US English', 'Karen', 'Moira',
+        'Victoria', 'Aria', 'Jenny', 'Google UK English Female',
+      ];
+
+      // 1. Preferred name match
+      for (var p = 0; p < preferred.length; p++) {
+        for (var v = 0; v < voices.length; v++) {
+          if (voices[v].name.indexOf(preferred[p]) !== -1) return voices[v];
+        }
+      }
+      // 2. Any en-US, non-espeak
+      for (var v = 0; v < voices.length; v++) {
+        if (voices[v].lang === 'en-US' && voices[v].name.toLowerCase().indexOf('espeak') === -1)
+          return voices[v];
+      }
+      // 3. Any English
+      for (var v = 0; v < voices.length; v++) {
+        if (voices[v].lang.indexOf('en') === 0 && voices[v].name.toLowerCase().indexOf('espeak') === -1)
+          return voices[v];
+      }
+      return voices[0];
+    }
+
+    /* Populate the voice dropdown in settings modal */
+    function _populateVoiceDropdown() {
+      var sel    = document.getElementById('s-voice-select');
+      if (!sel) return;
+      var voices = window.speechSynthesis.getVoices();
+      if (!voices || voices.length === 0) return;
+
+      /* Keep first 'Auto' option, clear the rest */
+      while (sel.options.length > 1) sel.remove(1);
+
+      voices.forEach(function(v) {
+        var opt   = document.createElement('option');
+        opt.value = v.name;
+        opt.textContent = v.name + ' (' + v.lang + ')' + (v.localService ? '' : ' ☁');
+        sel.appendChild(opt);
+      });
+
+      /* Restore previously saved voice */
+      if (zombaiConfig.selectedVoice) {
+        sel.value = zombaiConfig.selectedVoice.name || 'auto';
+      }
+    }
+
+    /* Resolve voice to use — selectedVoice or auto-pick */
+    function _getActiveVoice() {
+      if (zombaiConfig.selectedVoice) return zombaiConfig.selectedVoice;
+      if (!_resolvedVoice) _resolvedVoice = _pickBestVoice();
+      return _resolvedVoice;
+    }
+
+    /* Listen for voices loading (async in Chrome) */
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.onvoiceschanged = function() {
+        _resolvedVoice = _pickBestVoice();   // refresh cache
+        _populateVoiceDropdown();
+      };
+      /* Try immediately too (Firefox/Safari load synchronously) */
+      _resolvedVoice = _pickBestVoice();
+    }
+
+    /* ── Open / Close ─────────────────────────────────────── */
+    function openSettings() {
+      var overlay = document.getElementById('settings-overlay');
+      if (overlay) {
+        overlay.classList.add('open');
+        _populateVoiceDropdown();   // refresh voice list each open
+        /* Pre-fill fields from last saved config */
+        _prefillSettings();
+        settingsValidate();
+      }
+    }
+
+    function closeSettings() {
+      var overlay = document.getElementById('settings-overlay');
+      if (overlay) overlay.classList.remove('open');
+    }
+
+    /* Close on backdrop click */
+    document.addEventListener('click', function(e) {
+      var overlay = document.getElementById('settings-overlay');
+      var modal   = document.getElementById('settings-modal');
+      if (overlay && modal && overlay.classList.contains('open')) {
+        if (!modal.contains(e.target) && e.target === overlay) {
+          closeSettings();
+        }
+      }
+    });
+
+    /* ── Mode switching ────────────────────────────────────── */
+    var _settingsMode = 'cloud';
+
+    function settingsSetMode(mode) {
+      _settingsMode = mode;
+      document.getElementById('smode-cloud').classList.toggle('active', mode === 'cloud');
+      document.getElementById('smode-local').classList.toggle('active', mode === 'local');
+      document.getElementById('sfields-cloud').style.display = mode === 'cloud' ? '' : 'none';
+      document.getElementById('sfields-local').style.display = mode === 'local' ? '' : 'none';
+      settingsValidate();
+    }
+
+    /* ── Custom model field show/hide ──────────────────────── */
+    function settingsSyncModel() {
+      var sel  = document.getElementById('s-local-model');
+      var wrap = document.getElementById('s-custom-model-wrap');
+      if (sel && wrap) {
+        wrap.style.display = sel.value === 'custom' ? '' : 'none';
+        settingsValidate();
+      }
+    }
+
+    /* ── Validation + status indicator ────────────────────── */
+    function settingsValidate() {
+      var status = document.getElementById('settings-status');
+      var saveBtn = document.getElementById('settings-save-btn');
+      if (!status) return;
+
+      if (_settingsMode === 'cloud') {
+        var key = (document.getElementById('s-anthropic-key') || {}).value || '';
+        key = key.trim();
+        if (!key) {
+          status.textContent = '⚠ Anthropic API key required';
+          status.className   = 'warn';
+          if (saveBtn) saveBtn.style.opacity = '0.45';
+        } else if (!key.startsWith('sk-ant-')) {
+          status.textContent = '⚠ Key should start with sk-ant-…';
+          status.className   = 'warn';
+          if (saveBtn) saveBtn.style.opacity = '0.45';
+        } else {
+          status.textContent = '✔ Cloud mode ready';
+          status.className   = 'ok';
+          if (saveBtn) saveBtn.style.opacity = '1';
+        }
+      } else {
+        var ep = (document.getElementById('s-local-endpoint') || {}).value || '';
+        ep = ep.trim();
+        var model = _getSettingsLocalModel();
+        if (!ep) {
+          status.textContent = '⚠ Endpoint URL required';
+          status.className   = 'warn';
+          if (saveBtn) saveBtn.style.opacity = '0.45';
+        } else if (!ep.startsWith('http')) {
+          status.textContent = '⚠ URL must start with http://';
+          status.className   = 'warn';
+          if (saveBtn) saveBtn.style.opacity = '0.45';
+        } else if (!model) {
+          status.textContent = '⚠ Select or enter a model name';
+          status.className   = 'warn';
+          if (saveBtn) saveBtn.style.opacity = '0.45';
+        } else {
+          status.textContent = '✔ Local AI ready · ' + model;
+          status.className   = 'ok';
+          if (saveBtn) saveBtn.style.opacity = '1';
+        }
+      }
+    }
+
+    /* ── Helper: get resolved local model name ─────────────── */
+    function _getSettingsLocalModel() {
+      var sel    = document.getElementById('s-local-model');
+      var custom = document.getElementById('s-local-model-custom');
+      if (!sel) return '';
+      return sel.value === 'custom'
+        ? ((custom && custom.value.trim()) || '')
+        : sel.value;
+    }
+
+    /* ── Pre-fill fields from zombaiConfig ─────────────────── */
+    function _prefillSettings() {
+      settingsSetMode(zombaiConfig.mode);
+      var keyEl = document.getElementById('s-anthropic-key');
+      var epEl  = document.getElementById('s-local-endpoint');
+      if (keyEl && zombaiConfig.anthropicKey) keyEl.value = zombaiConfig.anthropicKey;
+      if (epEl  && zombaiConfig.localEndpoint) epEl.value = zombaiConfig.localEndpoint;
+      /* Try to match saved model in dropdown */
+      var sel = document.getElementById('s-local-model');
+      if (sel && zombaiConfig.localModel) {
+        var found = false;
+        for (var i = 0; i < sel.options.length; i++) {
+          if (sel.options[i].value === zombaiConfig.localModel) {
+            sel.selectedIndex = i;
+            found = true;
+            break;
+          }
+        }
+        if (!found) {
+          sel.value = 'custom';
+          var cust = document.getElementById('s-local-model-custom');
+          if (cust) cust.value = zombaiConfig.localModel;
+          settingsSyncModel();
+        }
+      }
+    }
+
+    /* ── Save config ────────────────────────────────────────── */
+    function saveSettings() {
+      var status = document.getElementById('settings-status');
+      if (!status) return;
+
+      if (_settingsMode === 'cloud') {
+        var key = (document.getElementById('s-anthropic-key') || {}).value || '';
+        key = key.trim();
+        if (!key || !key.startsWith('sk-ant-')) {
+          settingsValidate();   // show error
+          return;
+        }
+        zombaiConfig.mode         = 'cloud';
+        zombaiConfig.anthropicKey = key;
+        zombaiConfig.ready        = true;
+        _saveVoiceSelection();
+        console.log('[ZombAI] Config saved: Cloud mode');
+
+      } else {
+        var ep    = ((document.getElementById('s-local-endpoint') || {}).value || '').trim();
+        var model = _getSettingsLocalModel();
+        if (!ep || !ep.startsWith('http') || !model) {
+          settingsValidate();
+          return;
+        }
+        zombaiConfig.mode          = 'local';
+        zombaiConfig.localEndpoint = ep;
+        zombaiConfig.localModel    = model;
+        zombaiConfig.ready         = true;
+        _saveVoiceSelection();
+        console.log('[ZombAI] Config saved: Local mode · ' + model + ' @ ' + ep);
+      }
+
+      /* Flash status + close after brief pause */
+      status.textContent = '✔ Saved!';
+      status.className   = 'ok';
+      setTimeout(closeSettings, 700);
+    }
+
+    /* ── Save voice selection from dropdown ────────────────── */
+    function _saveVoiceSelection() {
+      var sel    = document.getElementById('s-voice-select');
+      if (!sel || sel.value === 'auto') {
+        zombaiConfig.selectedVoice = null;   // use auto-pick
+        _resolvedVoice = _pickBestVoice();
+      } else {
+        var voices = window.speechSynthesis.getVoices();
+        var found  = null;
+        for (var i = 0; i < voices.length; i++) {
+          if (voices[i].name === sel.value) { found = voices[i]; break; }
+        }
+        zombaiConfig.selectedVoice = found;
+      }
+      var vname = zombaiConfig.selectedVoice
+        ? zombaiConfig.selectedVoice.name
+        : ('Auto — ' + (_resolvedVoice ? _resolvedVoice.name : 'default'));
+      console.log('[ZombAI] Voice set to:', vname);
+    }
+
+    /* ── Keyboard: Escape closes modal ─────────────────────── */
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') closeSettings();
+    });
+
+  </script>
+
+  <!-- ═══════════════════════════════════════════════════════
+       S4 — AI CONVERSATION LAYER
+       S4-i   : onresult routes unmatched speech here
+       S4-ii  : routeToAI — Cloud (Anthropic) or Local (Ollama)
+       S4-iii : system prompt
+       S4-iv  : response → zombaiSpeak + error handling
+       S4-v   : welcome greeting (applied inline above)
+  ═══════════════════════════════════════════════════════ -->
+  <script>
+
+    /* ── Debounce: prevent overlapping AI calls ─────────── */
+    var aiCallActive = false;
+
+    /* ── S4-iii: System prompt ──────────────────────────── */
+    var ZOMBAI_SYSTEM_PROMPT =
+      'You are ZombAI — the voice layer of a gesture-controlled 3D particle visualiser. ' +
+      'Users control the particle cluster with hand gestures and voice commands. ' +
+      'When a user speaks something that is not a particle command, respond helpfully and conversationally. ' +
+      'Keep responses SHORT — 1 to 2 sentences maximum. Plain text only, no markdown. ' +
+      'Detect the language of the user message and reply in that same language.';
+
+    /* ── S4-ii: Main AI router ──────────────────────────── */
+    function routeToAI(transcript) {
+      /* Guard 1: prevent overlap */
+      if (aiCallActive) {
+        console.log('[ZombAI] AI call already in progress — skipping');
+        return;
+      }
+
+      /* Guard 2: config must be saved */
+      if (!zombaiConfig || !zombaiConfig.ready) {
+        if (typeof showToast === 'function')
+          showToast('Configure AI in ⚙ settings first');
+        console.log('[ZombAI] AI config not ready');
+        return;
+      }
+
+      aiCallActive = true;
+
+      /* Show HUD thinking indicator */
+      var statusEl = document.getElementById('status-line');
+      var prevStatus = statusEl ? statusEl.textContent : '';
+      if (statusEl) statusEl.textContent = '⏳ Thinking...';
+      if (typeof showGesture === 'function') showGesture('THINKING ◌');
+
+      /* Branch by mode */
+      if (zombaiConfig.mode === 'cloud') {
+        _callAnthropic(transcript, prevStatus);
+      } else {
+        _callLocal(transcript, prevStatus);
+      }
+    }
+
+    /* ── Cloud path — Anthropic API ─────────────────────── */
+    function _callAnthropic(transcript, prevStatus) {
+      fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': zombaiConfig.anthropicKey,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true'
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 120,
+          system: ZOMBAI_SYSTEM_PROMPT,
+          messages: [{ role: 'user', content: transcript }]
+        })
+      })
+      .then(function(resp) { return resp.json(); })
+      .then(function(data) {
+        if (data.error) throw new Error(data.error.message);
+        var text = (data.content && data.content[0] && data.content[0].text) || '';
+        if (!text) throw new Error('Empty response from Claude');
+        _handleAIResponse(text, prevStatus);
+      })
+      .catch(function(err) {
+        _handleAIError(err, 'cloud', prevStatus);
+      });
+    }
+
+    /* ── Local path — Ollama / llama.cpp ────────────────── */
+    function _callLocal(transcript, prevStatus) {
+      var endpoint = zombaiConfig.localEndpoint.replace(/\/$/, '');
+      var model    = zombaiConfig.localModel;
+
+      fetch(endpoint + '/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model:   model,
+          stream:  false,
+          messages: [
+            { role: 'system', content: ZOMBAI_SYSTEM_PROMPT },
+            { role: 'user',   content: transcript }
+          ]
+        })
+      })
+      .then(function(resp) {
+        if (!resp.ok) {
+          return resp.text().then(function(t) {
+            throw new Error('Local AI ' + resp.status + ': ' + t.slice(0, 80));
+          });
+        }
+        return resp.json();
+      })
+      .then(function(data) {
+        var text = (data.choices &&
+                    data.choices[0] &&
+                    data.choices[0].message &&
+                    data.choices[0].message.content) || '';
+        if (!text) throw new Error('Empty response from local model');
+        _handleAIResponse(text, prevStatus);
+      })
+      .catch(function(err) {
+        _handleAIError(err, 'local', prevStatus);
+      });
+    }
+
+    /* ── S4-iv: Speak AI response ───────────────────────── */
+    function _handleAIResponse(text, prevStatus) {
+      aiCallActive = false;
+
+      /* Restore HUD status */
+      var statusEl = document.getElementById('status-line');
+      if (statusEl) statusEl.textContent = prevStatus || 'Ready';
+
+      /* Speak the response */
+      if (typeof zombaiSpeak === 'function') zombaiSpeak(text);
+
+      /* Toast — first 36 chars as preview */
+      var preview = text.length > 36 ? text.slice(0, 36) + '…' : text;
+      if (typeof showToast === 'function') showToast('AI: ' + preview);
+
+      console.log('[ZombAI] AI response:', text);
+    }
+
+    /* ── S4-iv: Error handling ──────────────────────────── */
+    function _handleAIError(err, mode, prevStatus) {
+      aiCallActive = false;
+
+      var statusEl = document.getElementById('status-line');
+      if (statusEl) statusEl.textContent = prevStatus || 'Ready';
+
+      var msg = err.message || 'Unknown error';
+      var toast, spoken;
+
+      /* Specific error messages */
+      if (msg.indexOf('401') !== -1 || msg.indexOf('authentication') !== -1) {
+        toast  = 'Invalid API key — check ⚙ settings';
+        spoken = 'API key is invalid. Please check your settings.';
+      } else if (msg.indexOf('403') !== -1) {
+        toast  = 'API key not authorised';
+        spoken = 'API key is not authorised.';
+      } else if (mode === 'local' && (
+          msg.indexOf('Failed to fetch') !== -1 ||
+          msg.indexOf('NetworkError') !== -1 ||
+          msg.indexOf('CORS') !== -1)) {
+        toast  = 'Local AI unreachable — is Ollama running?';
+        spoken = 'Cannot reach local AI. Make sure Ollama is running.';
+      } else if (msg.indexOf('Empty') !== -1) {
+        toast  = 'AI returned empty response';
+        spoken = 'No response from AI.';
+      } else {
+        toast  = 'AI error: ' + msg.slice(0, 40);
+        spoken = 'AI is unavailable right now.';
+      }
+
+      if (typeof showToast   === 'function') showToast(toast);
+      if (typeof zombaiSpeak === 'function') zombaiSpeak(spoken);
+      console.warn('[ZombAI] AI error (' + mode + '):', msg);
+    }
+
+  </script>
+
+</body>
+</html>
