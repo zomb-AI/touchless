@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<!--
+  ZombAI Icon Generator
+  Open this file in Chrome. Icons will auto-download.
+  Place icon16.png, icon48.png, icon128.png in the icons/ folder.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>ZombAI — Generate Icons</title>
+  <style>
+    body { background:#111; color:#fff; font-family:sans-serif;
+           display:flex; flex-direction:column; align-items:center;
+           justify-content:center; min-height:100vh; gap:24px; }
+    h1 { font-size:18px; opacity:.7; }
+    .previews { display:flex; gap:24px; align-items:flex-end; }
+    canvas { border-radius: 22%; border: 1px solid rgba(255,255,255,.1); }
+    button {
+      background: linear-gradient(135deg,#00d4ff,#7b2ff7);
+      border:none; color:#fff; font-size:15px; font-weight:600;
+      padding:12px 32px; border-radius:50px; cursor:pointer;
+    }
+    p { font-size:13px; opacity:.5; }
+  </style>
+</head>
+<body>
+  <h1>ZombAI Icon Generator</h1>
+  <div class="previews" id="previews"></div>
+  <button onclick="downloadAll()">Download All Icons</button>
+  <p>Then place icon16.png, icon48.png, icon128.png in the icons/ folder</p>
+
+  <script>
+    const SIZES = [16, 48, 128];
+
+    function drawIcon(size) {
+      const c = document.createElement('canvas');
+      c.width = c.height = size;
+      const ctx = c.getContext('2d');
+
+      const r = size * 0.18; // corner radius
+      const pad = size * 0.08;
+
+      // Background rounded rect
+      const bgGrad = ctx.createLinearGradient(0, 0, size, size);
+      bgGrad.addColorStop(0, '#0f0f14');
+      bgGrad.addColorStop(1, '#1a1030');
+      ctx.beginPath();
+      ctx.roundRect(0, 0, size, size, r);
+      ctx.fillStyle = bgGrad;
+      ctx.fill();
+
+      // Subtle border glow
+      ctx.beginPath();
+      ctx.roundRect(0.5, 0.5, size-1, size-1, r);
+      ctx.strokeStyle = 'rgba(0,212,255,0.25)';
+      ctx.lineWidth = size * 0.025;
+      ctx.stroke();
+
+      // Z letterform
+      const strokeGrad = ctx.createLinearGradient(pad, pad, size-pad, size-pad);
+      strokeGrad.addColorStop(0, '#00d4ff');
+      strokeGrad.addColorStop(1, '#7b2ff7');
+
+      const t = size * 0.28;   // top y
+      const b = size * 0.72;   // bottom y
+      const l = size * 0.22;   // left x
+      const rr = size * 0.78;  // right x
+      const sw = Math.max(1.5, size * 0.10); // stroke width
+
+      ctx.beginPath();
+      ctx.moveTo(l, t);
+      ctx.lineTo(rr, t);
+      ctx.lineTo(l, b);
+      ctx.lineTo(rr, b);
+      ctx.strokeStyle = strokeGrad;
+      ctx.lineWidth = sw;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+
+      return c;
+    }
+
+    // Render previews
+    const previews = document.getElementById('previews');
+    SIZES.forEach(size => {
+      const wrap = document.createElement('div');
+      wrap.style.textAlign = 'center';
+      const c = drawIcon(size);
+      // Show at 2× for small sizes
+      const display = Math.max(size, 48);
+      c.style.width  = display + 'px';
+      c.style.height = display + 'px';
+      c.style.imageRendering = 'pixelated';
+      wrap.appendChild(c);
+      const lbl = document.createElement('p');
+      lbl.style = 'font-size:11px;opacity:.5;margin-top:8px;';
+      lbl.textContent = `${size}×${size}`;
+      wrap.appendChild(lbl);
+      previews.appendChild(wrap);
+    });
+
+    function downloadAll() {
+      SIZES.forEach((size, i) => {
+        setTimeout(() => {
+          const c = drawIcon(size);
+          const a = document.createElement('a');
+          a.download = `icon${size}.png`;
+          a.href = c.toDataURL('image/png');
+          a.click();
+        }, i * 200);
+      });
+    }
+  </script>
+</body>
+</html>

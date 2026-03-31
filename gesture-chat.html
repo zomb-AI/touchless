@@ -1,0 +1,1127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <meta name="theme-color" content="#0d0d0d">
+  <meta name="description" content="ZombAI GestureChat — control a chat interface hands-free using real-time hand tracking">
+  <title>ZombAI GestureChat — Research Prototype</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js" crossorigin="anonymous"></script>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --accent:  #00d4ff;
+      --accent2: #7b2ff7;
+      --brand-green: #00ff88;
+      --acc-dim: #00d4ff22;
+      --acc-bdr: #00d4ff33;
+      --bg:      #0d0d0d;
+      --surf:    #1a1a1a;
+      --surf2:   #252525;
+      --txt:     #ffffff;
+      --txt-dim: #ffffff55;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      color: var(--txt);
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', sans-serif;
+      overflow: hidden;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: none;
+    }
+
+    /* ─── Brand gradient ──────────────────────────────────────────── */
+    .brand-gradient {
+      background: linear-gradient(90deg, #00d4ff, #7b2ff7);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    /* ─── Loading ──────────────────────────────────────────────────── */
+    #loading {
+      position: fixed; inset: 0;
+      background: var(--bg);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 18px; z-index: 9999;
+      transition: opacity 0.4s;
+    }
+    #loading.hidden { opacity: 0; pointer-events: none; }
+
+    .loader-z-logo {
+      width: 52px; height: 52px;
+      display: flex; align-items: center; justify-content: center;
+      margin-bottom: 8px;
+    }
+    .loader-z-logo svg {
+      width: 100%; height: 100%;
+    }
+
+    .loader-ring {
+      width: 52px; height: 52px;
+      border: 2.5px solid #ffffff11;
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.9s linear infinite;
+    }
+    .loader-label { font-size: 14px; color: var(--txt-dim); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ─── Camera PIP ───────────────────────────────────────────────── */
+    #pip {
+      position: fixed;
+      top: max(14px, env(safe-area-inset-top));
+      right: 14px;
+      width: 68px; height: 68px;
+      border-radius: 50%; overflow: hidden;
+      border: 2px solid var(--acc-bdr);
+      background: #111;
+      z-index: 200;
+      box-shadow: 0 0 18px #00d4ff22;
+    }
+    #video {
+      width: 100%; height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1); /* mirror selfie */
+    }
+
+    /* ─── Gesture overlay ──────────────────────────────────────────── */
+    #overlay {
+      position: fixed; inset: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;   /* touches pass through to UI */
+      z-index: 150;
+    }
+
+    /* ─── App shell ────────────────────────────────────────────────── */
+    #app {
+      height: 100%;
+      display: flex; flex-direction: column;
+      position: relative; z-index: 10;
+    }
+
+    /* ─── Header ───────────────────────────────────────────────────── */
+    .header {
+      background: var(--surf);
+      padding: max(env(safe-area-inset-top), 14px) 14px 12px;
+      display: flex; align-items: center; gap: 12px;
+      border-bottom: 1px solid #ffffff0d;
+      flex-shrink: 0;
+    }
+    .avatar {
+      width: 40px; height: 40px; border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      display: flex; align-items: center; justify-content: center;
+      font-size: 16px; flex-shrink: 0; user-select: none;
+    }
+    .contact { flex: 1; min-width: 0; }
+    .contact-name { font-size: 15px; font-weight: 600; }
+    .contact-status {
+      font-size: 11.5px; color: var(--accent);
+      margin-top: 2px;
+      display: flex; align-items: center; gap: 5px;
+    }
+    .dot {
+      width: 5px; height: 5px;
+      background: var(--accent); border-radius: 50%;
+      animation: blink 2s ease-in-out infinite;
+    }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .badge {
+      background: var(--acc-dim);
+      border: 1px solid var(--acc-bdr);
+      color: var(--accent);
+      font-size: 11px; font-weight: 500;
+      padding: 3px 9px; border-radius: 20px; flex-shrink: 0;
+    }
+
+    /* ─── Messages ─────────────────────────────────────────────────── */
+    .messages {
+      flex: 1; overflow-y: auto; overflow-x: hidden;
+      padding: 14px 12px;
+      display: flex; flex-direction: column; gap: 5px;
+      -webkit-overflow-scrolling: touch;
+    }
+    .messages::-webkit-scrollbar { display: none; }
+    .date-divider {
+      text-align: center; font-size: 11px;
+      color: var(--txt-dim); margin: 6px 0; flex-shrink: 0;
+    }
+    .bubble {
+      max-width: 78%;
+      padding: 9px 13px 7px;
+      border-radius: 17px;
+      font-size: 14.5px; line-height: 1.45;
+      word-break: break-word;
+    }
+    .bubble.them {
+      background: var(--surf2);
+      align-self: flex-start;
+      border-bottom-left-radius: 4px;
+    }
+    .bubble.me {
+      background: linear-gradient(135deg,#00d4ff18,#7b2ff718);
+      border: 1px solid var(--acc-bdr);
+      align-self: flex-end;
+      border-bottom-right-radius: 4px;
+    }
+    .bubble-meta { font-size: 10.5px; color: var(--txt-dim); margin-top: 3px; text-align: right; }
+    .bubble.them .bubble-meta { text-align: left; }
+    .bubble.gesture-sent .bubble-meta::before { content: '🤌 '; }
+    @keyframes popIn {
+      0%  { opacity:0; transform:translateY(8px) scale(.97); }
+      60% { transform:translateY(-2px) scale(1.01); }
+      100%{ opacity:1; transform:translateY(0) scale(1); }
+    }
+    .bubble.new { animation: popIn .26s cubic-bezier(.34,1.56,.64,1) forwards; }
+
+    /* ─── Input bar ────────────────────────────────────────────────── */
+    .input-bar {
+      background: var(--surf);
+      padding: 8px 12px;
+      padding-bottom: max(env(safe-area-inset-bottom), 8px);
+      border-top: 1px solid #ffffff0d;
+      flex-shrink: 0;
+    }
+    #msg-input {
+      width: 100%;
+      background: var(--surf2);
+      border: 1px solid #ffffff0f;
+      border-radius: 20px;
+      padding: 10px 42px 10px 14px; /* right pad for kb icon */
+      color: var(--txt);
+      font-size: 14px; font-family: inherit;
+      outline: none;
+      resize: none; min-height: 42px; max-height: 100px;
+      line-height: 1.4;
+      cursor: default; /* readonly — VKB handles input */
+    }
+    #msg-input::placeholder { color: var(--txt-dim); }
+    #msg-input.vkb-open { border-color: var(--acc-bdr); }
+    /* keyboard icon inside input */
+    .input-wrapper { position: relative; }
+    .kb-icon {
+      position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+      font-size: 18px; opacity: 0.4; cursor: pointer;
+      padding: 4px;
+    }
+
+    /* ─── Footer text ──────────────────────────────────────────────── */
+    .powered-by-footer {
+      font-size: 10px;
+      color: var(--txt-dim);
+      text-align: center;
+      padding: 2px 0;
+    }
+
+    /* ─── Floating send button ─────────────────────────────────────── */
+    #float-send {
+      position: fixed;
+      right: 20px;
+      bottom: 100px;           /* starts just above input bar */
+      width: 58px; height: 58px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border: none;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      z-index: 130;
+      box-shadow: 0 4px 24px #00d4ff44, 0 0 0 0 #00d4ff00;
+      transition: transform .15s, box-shadow .15s, opacity .15s;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
+    }
+    #float-send:active,
+    #float-send.triggered { transform: scale(.88); opacity: .85; box-shadow: 0 0 32px #00d4ffaa; }
+    #float-send.dragging {
+      box-shadow: 0 8px 40px #7b2ff766, 0 0 0 3px #7b2ff744;
+      transition: none; /* no transition while dragging */
+    }
+    /* drag-zone ring hint */
+    #float-send::after {
+      content: '';
+      position: absolute; inset: -10px;
+      border-radius: 50%;
+      border: 1.5px dashed #7b2ff744;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity .3s;
+    }
+    #float-send.drag-hint::after { opacity: 1; }
+
+    /* ─── Gesture hover ────────────────────────────────────────────── */
+    .gesture-hover {
+      outline: 2px solid #00d4ff77 !important;
+      outline-offset: 3px;
+    }
+
+    /* ─── Status toast ─────────────────────────────────────────────── */
+    #status {
+      position: fixed;
+      bottom: 80px; left: 50%; transform: translateX(-50%);
+      background: #000000cc;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid #ffffff11;
+      color: #ffffffbb;
+      font-size: 12px; padding: 6px 16px;
+      border-radius: 20px; z-index: 140;
+      pointer-events: none;
+      transition: opacity .4s;
+      white-space: nowrap;
+    }
+
+    /* ─── Virtual Keyboard ─────────────────────────────────────────── */
+    #vkb {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      background: #111111ee;
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border-top: 1px solid #ffffff11;
+      border-radius: 20px 20px 0 0;
+      padding: 10px 6px;
+      padding-bottom: max(env(safe-area-inset-bottom), 10px);
+      z-index: 120;
+      transform: translateY(110%);
+      transition: transform .28s cubic-bezier(.4,0,.2,1);
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    #vkb.visible { transform: translateY(0); }
+
+    /* drag handle */
+    #vkb::before {
+      content: '';
+      display: block;
+      width: 36px; height: 4px;
+      background: #ffffff22; border-radius: 2px;
+      margin: 0 auto 4px;
+    }
+
+    /* text preview bar */
+    .vkb-display {
+      background: var(--surf2);
+      border: 1px solid #ffffff0f;
+      border-radius: 10px;
+      padding: 8px 14px;
+      font-size: 14px; color: var(--txt);
+      min-height: 38px;
+      display: flex; align-items: center;
+      overflow: hidden; white-space: nowrap;
+      letter-spacing: .01em;
+    }
+    .vkb-display .vkb-cursor {
+      display: inline-block;
+      width: 1.5px; height: 1.1em;
+      background: var(--accent);
+      margin-left: 1px;
+      animation: blink .9s step-end infinite;
+    }
+    .vkb-display.empty { color: var(--txt-dim); }
+
+    /* key rows */
+    .vkb-row {
+      display: flex; gap: 4px;
+      justify-content: center;
+    }
+    .vkb-key {
+      flex: 1;
+      min-width: 0;
+      height: 44px;
+      background: var(--surf2);
+      border: 1px solid #ffffff0d;
+      border-radius: 8px;
+      color: var(--txt);
+      font-size: 15px; font-weight: 500;
+      font-family: inherit;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      user-select: none;
+      transition: background .1s, transform .08s;
+      -webkit-tap-highlight-color: transparent;
+      touch-action: none;
+    }
+    .vkb-key:active,
+    .vkb-key.tap-flash { background: #3a3a3a; transform: scale(.93); }
+    .vkb-key.gesture-hover { background: #2e2e2e; outline: 2px solid #00d4ff55 !important; outline-offset: 2px; }
+
+    .vkb-key.key-back {
+      background: #1e1e1e; flex: 1.4;
+      font-size: 17px;
+    }
+    .vkb-key.key-space {
+      flex: 4; font-size: 12px; color: var(--txt-dim);
+      letter-spacing: .05em;
+    }
+    .vkb-key.key-done {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      flex: 2; font-size: 13px; font-weight: 600;
+      border: none;
+    }
+    .vkb-key.key-sym {
+      background: #1e1e1e; flex: 1.3;
+      font-size: 12px; color: var(--txt-dim);
+    }
+
+    /* ─── Guide ────────────────────────────────────────────────────── */
+    #guide {
+      position: fixed; inset: 0;
+      background: #000000d4;
+      backdrop-filter: blur(10px);
+      z-index: 500;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 0; padding: 24px 20px;
+      overflow-y: auto;
+    }
+    #guide.hidden { display: none; }
+    .guide-title {
+      font-size: 21px; font-weight: 700;
+      letter-spacing: -.02em;
+      margin-bottom: 20px;
+    }
+    .guide-subtitle {
+      font-size: 12px; color: var(--txt-dim);
+      margin-top: -14px; margin-bottom: 20px;
+      letter-spacing: .04em; text-transform: uppercase;
+    }
+    .guide-grid {
+      display: flex; flex-direction: column;
+      gap: 10px; width: 100%; max-width: 320px;
+      margin-bottom: 24px;
+    }
+    .guide-card {
+      background: var(--surf);
+      border: 1px solid #ffffff0f;
+      border-radius: 14px;
+      padding: 12px 14px;
+      display: flex; align-items: flex-start; gap: 12px;
+    }
+    .guide-em { font-size: 24px; flex-shrink: 0; line-height: 1; margin-top: 2px; }
+    .guide-body { }
+    .guide-label { font-size: 13px; font-weight: 600; color: var(--accent); margin-bottom: 2px; }
+    .guide-desc { font-size: 12.5px; color: #ffffffbb; line-height: 1.45; }
+    #guide-btn {
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      border: none; color: #fff;
+      font-size: 15px; font-weight: 600;
+      padding: 14px 40px; border-radius: 50px; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+<!-- Loading -->
+<div id="loading">
+  <div class="loader-z-logo">
+    <svg width="52" height="52" viewBox="0 0 32 32" fill="none">
+      <path d="M5 8h22L5 24h22" stroke-width="3.2" stroke="url(#zGrad)" stroke-linecap="round" stroke-linejoin="round"/>
+      <defs>
+        <linearGradient id="zGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" style="stop-color:#00d4ff;stop-opacity:1" />
+          <stop offset="100%" style="stop-color:#7b2ff7;stop-opacity:1" />
+        </linearGradient>
+      </defs>
+    </svg>
+  </div>
+  <div class="loader-ring"></div>
+  <div class="loader-label" id="loader-label">ZombAI is loading…</div>
+</div>
+
+<!-- Gesture Guide -->
+<div id="guide">
+  <div class="guide-title">ZombAI Gesture Control</div>
+  <div class="guide-subtitle">Touch Nothing. Control Everything.</div>
+  <div class="guide-grid">
+
+    <div class="guide-card">
+      <div class="guide-em">☝️</div>
+      <div class="guide-body">
+        <div class="guide-label">Point — Move Cursor</div>
+        <div class="guide-desc">Raise your <strong style="color:#fff">index finger</strong>. A blue dot follows its tip on screen. Keep other fingers curled for best tracking.</div>
+      </div>
+    </div>
+
+    <div class="guide-card">
+      <div class="guide-em">🤌</div>
+      <div class="guide-body">
+        <div class="guide-label">Pinch — Tap</div>
+        <div class="guide-desc">Bring your <strong style="color:#fff">thumb to your index finger</strong>. Works on any button, key, or input. 850 ms cooldown prevents double-fires.</div>
+      </div>
+    </div>
+
+    <div class="guide-card">
+      <div class="guide-em">🤞</div>
+      <div class="guide-body">
+        <div class="guide-label">Two Fingers — Scroll</div>
+        <div class="guide-desc">Extend <strong style="color:#fff">index + middle finger</strong> together. Move them <strong style="color:#fff">up or down</strong> to scroll through the chat. A purple dot appears at the midpoint.</div>
+      </div>
+    </div>
+
+    <div class="guide-card">
+      <div class="guide-em">🟣</div>
+      <div class="guide-body">
+        <div class="guide-label">Two Fingers Near ● — Drag Send</div>
+        <div class="guide-desc">Hover <strong style="color:#fff">index + middle</strong> within 70 px of the floating <strong style="color:#fff">Send</strong> button. A dashed ring appears — move your fingers to reposition it anywhere.</div>
+      </div>
+    </div>
+
+    <div class="guide-card">
+      <div class="guide-em">⌨️</div>
+      <div class="guide-body">
+        <div class="guide-label">Pinch Input — Virtual Keyboard</div>
+        <div class="guide-desc">Point at the <strong style="color:#fff">message bar</strong> and pinch (or tap it). A full QWERTY keyboard slides up. Pinch each key to type. Pinch <strong style="color:#fff">✓ done</strong> to close.</div>
+      </div>
+    </div>
+
+  </div>
+  <button id="guide-btn">Launch ZombAI →</button>
+</div>
+
+<!-- Camera PIP -->
+<div id="pip">
+  <video id="video" playsinline muted autoplay></video>
+</div>
+
+<!-- Gesture canvas (pointer-events:none so events reach UI) -->
+<canvas id="overlay"></canvas>
+
+<!-- Virtual Keyboard -->
+<div id="vkb">
+  <!-- built by JS -->
+</div>
+
+<!-- Floating Send Button -->
+<button id="float-send" aria-label="Send message">
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+    <path d="M22 2L11 13" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M22 2L15 22L11 13L2 9L22 2Z" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+</button>
+
+<!-- App -->
+<div id="app">
+  <div class="header">
+    <div class="avatar">✦</div>
+    <div class="contact">
+      <div class="contact-name">ZombAI Chat</div>
+      <div class="contact-status"><span class="dot"></span>gesture mode active</div>
+    </div>
+    <div class="badge">ZombAI ● live</div>
+  </div>
+
+  <div class="messages" id="messages">
+    <div class="date-divider">Today · 2:14 AM</div>
+  </div>
+
+  <div class="input-bar">
+    <div class="input-wrapper">
+      <textarea
+        id="msg-input"
+        placeholder="ZombAI Keyboard: pinch input or tap ⌨️"
+        rows="1"
+        readonly
+      ></textarea>
+      <span class="kb-icon" id="kb-icon">⌨️</span>
+    </div>
+    <div class="powered-by-footer">Powered by ZombAI</div>
+  </div>
+</div>
+
+<div id="status" style="opacity:.45">Initializing…</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  ZombAI GESTURE CHAT — Research Prototype
+//  Features:
+//    · Index fingertip cursor (blue) + pinch to tap
+//    · Middle fingertip cursor (purple) for 2nd touch point
+//    · Two-finger scroll (index + middle moving up/down)
+//    · Two-finger drag for floating Send button
+//    · Virtual QWERTY keyboard (pinch-to-type)
+// ═══════════════════════════════════════════════════════════════
+
+// ── DOM refs ──────────────────────────────────────────────────
+const $video     = document.getElementById('video');
+const $overlay   = document.getElementById('overlay');
+const $status    = document.getElementById('status');
+const $loading   = document.getElementById('loading');
+const $guide     = document.getElementById('guide');
+const $messages  = document.getElementById('messages');
+const $input     = document.getElementById('msg-input');
+const $floatSend = document.getElementById('float-send');
+const $vkb       = document.getElementById('vkb');
+const ctx        = $overlay.getContext('2d');
+
+// ── MediaPipe landmark indices ────────────────────────────────
+const THUMB_TIP  = 4;
+const INDEX_TIP  = 8;  // primary cursor
+const INDEX_MCP  = 5;  // index base
+const MIDDLE_TIP = 12; // secondary cursor
+const MIDDLE_MCP = 9;  // middle base
+
+// ── Gesture thresholds ────────────────────────────────────────
+const PINCH_THRESH  = 0.057; // normalized pinch distance
+const DRAG_RADIUS   = 72;    // px from btn center to enter drag mode
+const SCROLL_SPEED  = 1.7;   // multiplier for scroll delta
+const COOLDOWN_MS   = 860;   // ms between gesture taps
+
+// ── Conversation data ─────────────────────────────────────────
+const SEED = [
+  { text: "dude this hand tracking thing is actually insane", from: "them", time: "2:14 AM" },
+  { text: "i know right. building my own version rn", from: "me", time: "2:15 AM" },
+  { text: "wait what tools are you using", from: "them", time: "2:15 AM" },
+  { text: "mediapipe + vanilla JS. no framework, single file", from: "me", time: "2:16 AM" },
+  { text: "you are genuinely unhinged (compliment)", from: "them", time: "2:17 AM" },
+];
+const AUTO_REPLIES = ["lol 😭","ok that's actually sick","🔥🔥","send me the file",
+  "how is the latency?","bro pinch to send is wild","👏","ok I need this"];
+const QUICK_SENDS = ["sent with ZombAI 🤌","no hands needed 👋","ZombAI gesture works!","it works!!",
+  "testing from across the room","✌️","this is the future","latency is solid"];
+let autoIdx = 0, quickIdx = 0;
+
+// ── Runtime state ─────────────────────────────────────────────
+const cursor1 = { x: -300, y: -300, visible: false };  // index
+const cursor2 = { x: -300, y: -300, visible: false };  // middle
+
+let isPinching    = false;
+let lastClickAt   = 0;
+let lastHovered   = null;
+let handVisible   = false;
+let statusTimer   = null;
+
+// Two-finger state
+let lastMidY      = null;   // for scroll delta
+let isDragging    = false;
+let dragStartMid  = { x: 0, y: 0 };
+let dragStartBtn  = { x: 0, y: 0 };
+
+// ── Overlay canvas sizing ─────────────────────────────────────
+function resizeOverlay() {
+  $overlay.width  = window.innerWidth;
+  $overlay.height = window.innerHeight;
+}
+resizeOverlay();
+window.addEventListener('resize', resizeOverlay);
+
+// ── Status toast ──────────────────────────────────────────────
+function setStatus(msg, dim = false) {
+  $status.textContent = msg;
+  $status.style.opacity = dim ? '0.35' : '0.9';
+  clearTimeout(statusTimer);
+  if (!dim) statusTimer = setTimeout(() => { $status.style.opacity = '.35'; }, 2400);
+}
+
+// ── Chat helpers ──────────────────────────────────────────────
+function fmtTime() {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+function appendBubble(text, from, time, gesture = false) {
+  const d = document.createElement('div');
+  d.className = `bubble ${from} new${gesture ? ' gesture-sent' : ''}`;
+  d.innerHTML = `${esc(text)}<div class="bubble-meta">${time}</div>`;
+  $messages.appendChild(d);
+  $messages.scrollTo({ top: $messages.scrollHeight, behavior: 'smooth' });
+}
+
+function esc(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function seedMessages() {
+  SEED.forEach(m => appendBubble(m.text, m.from, m.time));
+}
+
+function sendMessage(gesture = false) {
+  const text = $input.value.trim();
+  const out  = text || QUICK_SENDS[quickIdx++ % QUICK_SENDS.length];
+
+  appendBubble(out, 'me', fmtTime(), gesture);
+  $input.value = '';
+  updateVKBDisplay();
+
+  // Pulse float button
+  $floatSend.classList.add('triggered');
+  setTimeout(() => $floatSend.classList.remove('triggered'), 250);
+
+  // Auto-reply
+  setTimeout(() => {
+    appendBubble(AUTO_REPLIES[autoIdx++ % AUTO_REPLIES.length], 'them', fmtTime());
+  }, 900 + Math.random() * 500);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  VIRTUAL KEYBOARD
+// ══════════════════════════════════════════════════════════════
+const KB_ROWS = [
+  ['Q','W','E','R','T','Y','U','I','O','P','⌫'],
+  ['A','S','D','F','G','H','J','K','L'],
+  ['Z','X','C','V','B','N','M','.','!'],
+  ['123','       ','✓ done'],
+];
+// map special keys
+const KEY_CLASS = { '⌫':'key-back', '       ':'key-space', '✓ done':'key-done', '123':'key-sym' };
+
+function buildVKB() {
+  // Display
+  const display = document.createElement('div');
+  display.className = 'vkb-display empty';
+  display.id = 'vkb-display';
+  display.innerHTML = '<span>tap keys to type</span><span class="vkb-cursor"></span>';
+  $vkb.appendChild(display);
+
+  KB_ROWS.forEach((row, ri) => {
+    const rowEl = document.createElement('div');
+    rowEl.className = 'vkb-row';
+    if (ri === 1) rowEl.style.paddingInline = '5%';
+    if (ri === 2) rowEl.style.paddingInline = '2%';
+
+    row.forEach(key => {
+      const btn = document.createElement('button');
+      btn.className = 'vkb-key' + (KEY_CLASS[key] ? ' ' + KEY_CLASS[key] : '');
+      btn.dataset.key = key;
+      btn.dataset.tap = '1'; // gesture-tappable marker
+      btn.textContent = key === '       ' ? 'space' : key;
+      btn.addEventListener('click', () => handleKey(key));
+      rowEl.appendChild(btn);
+    });
+
+    $vkb.appendChild(rowEl);
+  });
+}
+
+function handleKey(key) {
+  if (key === '⌫') {
+    $input.value = $input.value.slice(0, -1);
+  } else if (key === '       ') {
+    $input.value += ' ';
+  } else if (key === '✓ done') {
+    hideVKB();
+    return;
+  } else if (key === '123') {
+    // TODO: numeric layer (future enhancement)
+    return;
+  } else {
+    $input.value += key;
+  }
+  updateVKBDisplay();
+}
+
+function updateVKBDisplay() {
+  const d = document.getElementById('vkb-display');
+  const txt = $input.value;
+  if (txt) {
+    d.classList.remove('empty');
+    d.innerHTML = `<span>${esc(txt)}</span><span class="vkb-cursor"></span>`;
+  } else {
+    d.classList.add('empty');
+    d.innerHTML = `<span>tap keys to type</span><span class="vkb-cursor"></span>`;
+  }
+}
+
+function showVKB() {
+  $vkb.classList.add('visible');
+  $input.classList.add('vkb-open');
+  updateVKBDisplay();
+  setStatus('pinch keys to type · pinch ✓ done to close');
+}
+
+function hideVKB() {
+  $vkb.classList.remove('visible');
+  $input.classList.remove('vkb-open');
+  setStatus('keyboard closed · pinch Send to send', true);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  CANVAS DRAWING
+// ══════════════════════════════════════════════════════════════
+function drawFrame() {
+  ctx.clearRect(0, 0, $overlay.width, $overlay.height);
+
+  const c1v = cursor1.visible;
+  const c2v = cursor2.visible;
+
+  // Line + midpoint between two cursors
+  if (c1v && c2v) {
+    const mx = (cursor1.x + cursor2.x) / 2;
+    const my = (cursor1.y + cursor2.y) / 2;
+
+    // Dashed connector line
+    ctx.beginPath();
+    ctx.moveTo(cursor1.x, cursor1.y);
+    ctx.lineTo(cursor2.x, cursor2.y);
+    ctx.setLineDash([5, 5]);
+    ctx.strokeStyle = isDragging ? '#7b2ff766' : '#00d4ff33';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Midpoint marker
+    const midColor = isDragging ? '#7b2ff7' : '#00d4ff';
+    const mgrd = ctx.createRadialGradient(mx, my, 0, mx, my, 18);
+    mgrd.addColorStop(0, midColor + '44');
+    mgrd.addColorStop(1, 'transparent');
+    ctx.beginPath(); ctx.arc(mx, my, 18, 0, Math.PI * 2);
+    ctx.fillStyle = mgrd; ctx.fill();
+    ctx.beginPath(); ctx.arc(mx, my, 5, 0, Math.PI * 2);
+    ctx.fillStyle = midColor; ctx.globalAlpha = .8; ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+
+  // Cursor 1 — index (blue, primary)
+  if (c1v) drawSingleCursor(cursor1.x, cursor1.y, isPinching, '#00d4ff', false);
+
+  // Cursor 2 — middle (purple, secondary)
+  if (c2v) drawSingleCursor(cursor2.x, cursor2.y, false, '#7b2ff7', true);
+}
+
+function drawSingleCursor(x, y, pinching, color, secondary) {
+  const outerR = secondary ? 10  : (pinching ? 11 : 14);
+  const innerR = secondary ? 3.5 : (pinching ? 5  : 6);
+  const glowR  = secondary ? 18  : (pinching ? 22 : 30);
+  ctx.globalAlpha = secondary ? 0.65 : 1;
+
+  // Glow halo
+  const g = ctx.createRadialGradient(x, y, 0, x, y, glowR);
+  g.addColorStop(0, color + (secondary ? '28' : (pinching ? '30' : '22')));
+  g.addColorStop(1, 'transparent');
+  ctx.beginPath(); ctx.arc(x, y, glowR, 0, Math.PI * 2);
+  ctx.fillStyle = g; ctx.fill();
+
+  // Outer ring
+  ctx.beginPath(); ctx.arc(x, y, outerR, 0, Math.PI * 2);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = pinching ? 2.5 : 1.8;
+  ctx.globalAlpha = secondary ? .55 : (pinching ? 1 : .85);
+  ctx.stroke();
+
+  // Inner dot
+  ctx.beginPath(); ctx.arc(x, y, innerR, 0, Math.PI * 2);
+  ctx.fillStyle = color; ctx.globalAlpha = secondary ? .65 : 1;
+  ctx.fill();
+
+  // Pinch confirm ring
+  if (pinching && !secondary) {
+    ctx.beginPath(); ctx.arc(x, y, 25, 0, Math.PI * 2);
+    ctx.strokeStyle = '#ffffff44'; ctx.lineWidth = 1.2;
+    ctx.globalAlpha = 1; ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  HOVER MANAGEMENT
+// ══════════════════════════════════════════════════════════════
+function getTappableAt(x, y) {
+  const el = document.elementFromPoint(x, y);
+  // Float-send button, vkb keys, textarea, other buttons
+  return el?.closest('#float-send, [data-key], textarea, button, a, [data-tap]') || null;
+}
+
+function updateHover(el) {
+  if (el === lastHovered) return;
+  lastHovered?.classList.remove('gesture-hover');
+  el?.classList.add('gesture-hover');
+  lastHovered = el;
+}
+
+// ══════════════════════════════════════════════════════════════
+//  DRAG HELPERS (floating send button)
+// ══════════════════════════════════════════════════════════════
+function startDrag(midX, midY) {
+  if (isDragging) return;
+  isDragging = true;
+  const r = $floatSend.getBoundingClientRect();
+  dragStartMid = { x: midX, y: midY };
+  dragStartBtn = { x: r.left, y: r.top };
+  // Switch from right/bottom anchoring to left/top for free movement
+  $floatSend.style.left   = r.left + 'px';
+  $floatSend.style.top    = r.top  + 'px';
+  $floatSend.style.right  = 'auto';
+  $floatSend.style.bottom = 'auto';
+  $floatSend.classList.add('dragging');
+}
+
+function updateDrag(midX, midY) {
+  const dx = midX - dragStartMid.x;
+  const dy = midY - dragStartMid.y;
+  const W  = window.innerWidth, H = window.innerHeight;
+  const SZ = 60;
+  const nx = Math.max(4, Math.min(W - SZ - 4, dragStartBtn.x + dx));
+  const ny = Math.max(4, Math.min(H - SZ - 4, dragStartBtn.y + dy));
+  $floatSend.style.left = nx + 'px';
+  $floatSend.style.top  = ny + 'px';
+}
+
+function endDrag() {
+  if (!isDragging) return;
+  isDragging = false;
+  $floatSend.classList.remove('dragging');
+}
+
+// ══════════════════════════════════════════════════════════════
+//  FIRE TAP — action dispatcher
+// ══════════════════════════════════════════════════════════════
+function fireTap(el, x, y) {
+  if (!el) return;
+
+  // VKB key
+  if (el.dataset?.key !== undefined) {
+    flashKey(el);
+    handleKey(el.dataset.key);
+    return;
+  }
+
+  // Float send
+  if (el.id === 'float-send' || el.closest('#float-send')) {
+    sendMessage(true);
+    setStatus('✓ sent via pinch 🤌');
+    return;
+  }
+
+  // Message input → open VKB
+  if (el.tagName === 'TEXTAREA' || el.id === 'msg-input') {
+    showVKB();
+    return;
+  }
+
+  // Keyboard icon button
+  if (el.id === 'kb-icon' || el.closest('#kb-icon')) {
+    showVKB();
+    return;
+  }
+
+  // Generic
+  el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: x, clientY: y }));
+  el.dispatchEvent(new PointerEvent('pointerup',   { bubbles: true, clientX: x, clientY: y }));
+  el.click();
+}
+
+function flashKey(el) {
+  el.classList.add('tap-flash');
+  setTimeout(() => el.classList.remove('tap-flash'), 130);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  LANDMARK PROCESSOR — heart of the gesture engine
+// ══════════════════════════════════════════════════════════════
+function processLandmarks(landmarks) {
+  const W = $overlay.width, H = $overlay.height;
+  const mx = lx => (1 - lx) * W;  // mirror X for selfie
+  const my = ly => ly * H;
+
+  const thumbL  = landmarks[THUMB_TIP];
+  const idxL    = landmarks[INDEX_TIP];
+  const idxBase = landmarks[INDEX_MCP];
+  const midL    = landmarks[MIDDLE_TIP];
+  const midBase = landmarks[MIDDLE_MCP];
+
+  // ── Cursor 1: index finger tip ──────────────────────────────
+  cursor1.x = mx(idxL.x);
+  cursor1.y = my(idxL.y);
+  cursor1.visible = true;
+
+  // ── Cursor 2: middle finger tip (only if clearly extended) ──
+  // "extended" = tip Y is clearly above MCP joint (in camera space, lower y = higher up)
+  const midExtended = (midL.y - midBase.y) < -0.03;
+  cursor2.visible = midExtended;
+  if (midExtended) {
+    cursor2.x = mx(midL.x);
+    cursor2.y = my(midL.y);
+  }
+
+  // ── Pinch detection: thumb + index ─────────────────────────
+  const pinchDist = Math.hypot(idxL.x - thumbL.x, idxL.y - thumbL.y);
+  const wasPinching = isPinching;
+  isPinching = pinchDist < PINCH_THRESH;
+
+  // ── Two-finger logic ────────────────────────────────────────
+  if (cursor1.visible && cursor2.visible) {
+    const midX = (cursor1.x + cursor2.x) / 2;
+    const midY = (cursor1.y + cursor2.y) / 2;
+
+    // Distance from midpoint to float-send button center
+    const r = $floatSend.getBoundingClientRect();
+    const btnCX = r.left + r.width  / 2;
+    const btnCY = r.top  + r.height / 2;
+    const dist  = Math.hypot(midX - btnCX, midY - btnCY);
+
+    const nearBtn = dist < DRAG_RADIUS;
+
+    if (nearBtn || isDragging) {
+      // ── DRAG MODE ───────────────────────────────────────────
+      if (!isDragging) startDrag(midX, midY);
+      else             updateDrag(midX, midY);
+      lastMidY = null; // suppress scroll while dragging
+      $floatSend.classList.add('drag-hint');
+      setStatus('dragging Send · release to place 🟣');
+    } else {
+      // ── SCROLL MODE ─────────────────────────────────────────
+      endDrag();
+      $floatSend.classList.remove('drag-hint');
+      if (lastMidY !== null) {
+        const delta = midY - lastMidY;
+        if (Math.abs(delta) > 0.8) {
+          $messages.scrollTop += delta * SCROLL_SPEED;
+        }
+      }
+      lastMidY = midY;
+      setStatus('↕ scrolling · two-finger active');
+    }
+  } else {
+    // One or no fingers — exit two-finger modes
+    if (isDragging) {
+      endDrag();
+      $floatSend.classList.remove('drag-hint');
+    }
+    lastMidY = null;
+  }
+
+  // ── Render both cursors ─────────────────────────────────────
+  drawFrame();
+
+  // ── Hover with primary cursor ───────────────────────────────
+  const tappable = getTappableAt(cursor1.x, cursor1.y);
+  updateHover(tappable);
+
+  if (!handVisible) {
+    handVisible = true;
+    setStatus('hand detected · pinch to tap', true);
+  }
+
+  // Status for hovered element
+  if (!isDragging && cursor1.visible && !cursor2.visible) {
+    if (tappable) {
+      const lbl = tappable.id === 'float-send' ? '→ Send'
+                : tappable.dataset?.key ? `key: ${tappable.dataset.key}`
+                : tappable.id || tappable.tagName.toLowerCase();
+      setStatus(`pointing at ${lbl} · pinch to tap`);
+    }
+  }
+
+  // ── Tap on pinch leading edge ───────────────────────────────
+  const now = Date.now();
+  if (isPinching && !wasPinching && now - lastClickAt > COOLDOWN_MS) {
+    lastClickAt = now;
+    fireTap(tappable, cursor1.x, cursor1.y);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+//  MEDIAPIPE INIT
+// ══════════════════════════════════════════════════════════════
+async function initMediaPipe() {
+  document.getElementById('loader-label').textContent = 'ZombAI is loading…';
+
+  const hands = new Hands({
+    locateFile: f =>
+      `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${f}`
+  });
+
+  hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.70,
+    minTrackingConfidence: 0.63,
+  });
+
+  hands.onResults(results => {
+    if (results.multiHandLandmarks?.length > 0) {
+      processLandmarks(results.multiHandLandmarks[0]);
+    } else {
+      if (handVisible) {
+        handVisible = false;
+        cursor1.visible = false;
+        cursor2.visible = false;
+        endDrag();
+        $floatSend.classList.remove('drag-hint');
+        updateHover(null);
+        lastMidY = null;
+        setStatus('hand not in frame · raise it up', true);
+      }
+      drawFrame();
+    }
+  });
+
+  document.getElementById('loader-label').textContent = 'Requesting camera…';
+
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+      audio: false,
+    });
+  } catch {
+    stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+  }
+
+  $video.srcObject = stream;
+  await new Promise(res => { $video.onloadeddata = res; });
+  await $video.play();
+
+  // Frame loop — guard against concurrent sends
+  let running = false;
+  const tick = async () => {
+    if (!running) {
+      running = true;
+      try { await hands.send({ image: $video }); } catch (_) {}
+      running = false;
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+// ══════════════════════════════════════════════════════════════
+//  EVENT LISTENERS
+// ══════════════════════════════════════════════════════════════
+
+// Physical tap on input → open VKB
+$input.addEventListener('click', showVKB);
+
+// Keyboard icon
+document.getElementById('kb-icon').addEventListener('click', showVKB);
+
+// Float send — physical tap fallback
+$floatSend.addEventListener('click', () => sendMessage(false));
+
+// Close VKB on backdrop tap (anywhere outside vkb)
+document.addEventListener('click', e => {
+  if ($vkb.classList.contains('visible') &&
+      !$vkb.contains(e.target) &&
+      e.target.id !== 'msg-input' &&
+      e.target.id !== 'kb-icon') {
+    hideVKB();
+  }
+});
+
+// ── Guide → launch ─────────────────────────────────────────────
+document.getElementById('guide-btn').addEventListener('click', async () => {
+  $guide.classList.add('hidden');
+  $loading.classList.remove('hidden');
+  document.querySelector('.loader-ring').style.display = '';
+  document.getElementById('loader-label').textContent = 'ZombAI is loading…';
+
+  try {
+    await initMediaPipe();
+    $loading.classList.add('hidden');
+    setStatus('raise hand to control · pinch to tap', true);
+  } catch (err) {
+    console.error(err);
+    document.getElementById('loader-label').textContent = 'Camera access needed. Tap to retry.';
+    document.querySelector('.loader-ring').style.display = 'none';
+    $loading.addEventListener('click', () => location.reload(), { once: true });
+  }
+});
+
+// ── Boot ───────────────────────────────────────────────────────
+buildVKB();
+seedMessages();
+$loading.classList.add('hidden'); // guide shown first; loader re-appears after guide-btn
+</script>
+</body>
+</html>

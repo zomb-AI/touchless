@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ZombAI Gesture Control</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --c1: #00d4ff;
+      --c2: #7b2ff7;
+      --cg: #00ff88;
+      --bg: #0d0d0d;
+      --s1: #1a1a1a;
+      --s2: #252525;
+      --tx: #ffffff;
+      --td: rgba(255,255,255,.45);
+    }
+
+    body {
+      width: 300px;
+      background: var(--bg);
+      color: var(--tx);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      overflow: hidden;
+    }
+
+    /* ── Header ─────────────────────────────────────────── */
+    .header {
+      background: var(--s1);
+      padding: 16px 16px 14px;
+      display: flex; align-items: center; gap: 10px;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+    }
+    .logo svg { display: block; }
+    .brand { }
+    .brand-name {
+      font-size: 16px; font-weight: 700; letter-spacing: -.02em;
+      line-height: 1.1;
+    }
+    .brand-name .ai {
+      background: linear-gradient(90deg, var(--c1), var(--c2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .brand-tag {
+      font-size: 9.5px; color: var(--td);
+      letter-spacing: .05em; text-transform: uppercase;
+      margin-top: 1px;
+    }
+    .version {
+      margin-left: auto;
+      font-size: 10px; color: var(--td);
+      background: var(--s2);
+      border: 1px solid rgba(255,255,255,.07);
+      padding: 2px 7px; border-radius: 10px;
+    }
+
+    /* ── Current site ────────────────────────────────────── */
+    .site-row {
+      padding: 10px 16px;
+      display: flex; align-items: center; gap: 8px;
+      border-bottom: 1px solid rgba(255,255,255,.05);
+    }
+    .site-favicon {
+      width: 16px; height: 16px; border-radius: 3px;
+      background: var(--s2);
+      flex-shrink: 0;
+    }
+    .site-url {
+      font-size: 11.5px; color: var(--td);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      flex: 1;
+    }
+
+    /* ── Toggle card ─────────────────────────────────────── */
+    .toggle-card {
+      margin: 12px 14px;
+      background: var(--s1);
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 14px;
+      padding: 14px 16px;
+      display: flex; align-items: center; gap: 12px;
+    }
+    .toggle-info { flex: 1; }
+    .toggle-label { font-size: 14px; font-weight: 600; }
+    .toggle-desc  { font-size: 11px; color: var(--td); margin-top: 3px; }
+
+    /* Toggle switch */
+    .switch { position: relative; width: 44px; height: 24px; flex-shrink: 0; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider {
+      position: absolute; inset: 0; cursor: pointer;
+      background: var(--s2);
+      border: 1px solid rgba(255,255,255,.1);
+      border-radius: 24px;
+      transition: background .25s;
+    }
+    .slider::before {
+      content: '';
+      position: absolute;
+      width: 18px; height: 18px;
+      left: 2px; top: 2px;
+      background: rgba(255,255,255,.5);
+      border-radius: 50%;
+      transition: transform .25s, background .25s;
+    }
+    .switch input:checked + .slider {
+      background: linear-gradient(135deg, var(--c1), var(--c2));
+      border-color: transparent;
+    }
+    .switch input:checked + .slider::before {
+      transform: translateX(20px);
+      background: #fff;
+    }
+
+    /* Status badge under toggle card */
+    .status-badge {
+      margin: 0 14px 12px;
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px;
+    }
+    .status-dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--td);
+      flex-shrink: 0;
+      transition: background .3s;
+    }
+    .status-dot.active { background: var(--cg); box-shadow: 0 0 6px var(--cg); }
+    .status-text { color: var(--td); }
+    .status-text.active { color: var(--cg); }
+
+    /* ── Shortcut hint ───────────────────────────────────── */
+    .shortcut {
+      margin: 0 14px 12px;
+      background: var(--s2);
+      border: 1px solid rgba(255,255,255,.05);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 11px; color: var(--td);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .kbd {
+      background: rgba(255,255,255,.08);
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-size: 10px; font-family: monospace;
+      color: var(--tx);
+    }
+
+    /* ── Gesture guide ───────────────────────────────────── */
+    .section-title {
+      font-size: 10px; font-weight: 600;
+      color: var(--td); text-transform: uppercase;
+      letter-spacing: .06em;
+      padding: 0 16px 6px;
+    }
+    .gestures {
+      margin: 0 14px 14px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .gesture-row {
+      background: var(--s1);
+      border: 1px solid rgba(255,255,255,.05);
+      border-radius: 10px;
+      padding: 8px 10px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .g-icon { font-size: 18px; flex-shrink: 0; }
+    .g-info { }
+    .g-name { font-size: 12px; font-weight: 600; color: var(--c1); }
+    .g-desc { font-size: 10.5px; color: var(--td); margin-top: 1px; line-height: 1.4; }
+
+    /* ── Footer ─────────────────────────────────────────── */
+    .footer {
+      border-top: 1px solid rgba(255,255,255,.05);
+      padding: 10px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .footer-brand {
+      font-size: 10px; color: var(--td);
+    }
+    .footer-brand span {
+      background: linear-gradient(90deg, var(--c1), var(--c2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      font-weight: 600;
+    }
+    .footer-link {
+      font-size: 10px; color: var(--c1);
+      text-decoration: none; opacity: .7;
+    }
+  </style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div class="logo">
+    <svg viewBox="0 0 28 28" width="28" height="28" fill="none">
+      <defs>
+        <linearGradient id="zg" x1="0" y1="0" x2="28" y2="28" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#00d4ff"/>
+          <stop offset="100%" stop-color="#7b2ff7"/>
+        </linearGradient>
+      </defs>
+      <rect width="28" height="28" rx="7" fill="#1a1a1a"/>
+      <path d="M7 9h14L7 19h14" stroke="url(#zg)" stroke-width="2.4"
+        stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </div>
+  <div class="brand">
+    <div class="brand-name">Zomb<span class="ai">AI</span></div>
+    <div class="brand-tag">Gesture Control</div>
+  </div>
+  <div class="version">v1.0</div>
+</div>
+
+<!-- Current site -->
+<div class="site-row">
+  <img class="site-favicon" id="favicon" src="" alt="">
+  <div class="site-url" id="site-url">Loading…</div>
+</div>
+
+<!-- Toggle -->
+<div class="toggle-card">
+  <div class="toggle-info">
+    <div class="toggle-label">Gesture Overlay</div>
+    <div class="toggle-desc" id="toggle-desc">Enable on this tab</div>
+  </div>
+  <label class="switch">
+    <input type="checkbox" id="toggle">
+    <span class="slider"></span>
+  </label>
+</div>
+
+<!-- Status -->
+<div class="status-badge">
+  <div class="status-dot" id="status-dot"></div>
+  <div class="status-text" id="status-text">Inactive on this tab</div>
+</div>
+
+<!-- Keyboard shortcut hint -->
+<div class="shortcut">
+  <span>Quick toggle:</span>
+  <span class="kbd">Alt</span>+<span class="kbd">G</span>
+  <span>on any page</span>
+</div>
+
+<!-- Gesture guide -->
+<div class="section-title">Gesture Reference</div>
+<div class="gestures">
+  <div class="gesture-row">
+    <div class="g-icon">☝️</div>
+    <div class="g-info">
+      <div class="g-name">Point</div>
+      <div class="g-desc">Index finger moves the blue cursor</div>
+    </div>
+  </div>
+  <div class="gesture-row">
+    <div class="g-icon">🤌</div>
+    <div class="g-info">
+      <div class="g-name">Pinch to Tap</div>
+      <div class="g-desc">Thumb + index → clicks highlighted element</div>
+    </div>
+  </div>
+  <div class="gesture-row">
+    <div class="g-icon">🤞</div>
+    <div class="g-info">
+      <div class="g-name">Two Fingers → Scroll</div>
+      <div class="g-desc">Index + middle moving up/down scrolls the page</div>
+    </div>
+  </div>
+  <div class="gesture-row">
+    <div class="g-icon">🟣</div>
+    <div class="g-info">
+      <div class="g-name">Two Fingers Near HUD → Drag</div>
+      <div class="g-desc">Hover fingers near the ZombAI badge to reposition it</div>
+    </div>
+  </div>
+</div>
+
+<!-- Footer -->
+<div class="footer">
+  <div class="footer-brand">Powered by <span>ZombAI</span></div>
+  <a class="footer-link" href="#" id="report-link">Touch Nothing. Control Everything.</a>
+</div>
+
+<script src="popup.js"></script>
+</body>
+</html>
